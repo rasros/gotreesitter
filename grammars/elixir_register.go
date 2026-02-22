@@ -2,11 +2,17 @@
 
 package grammars
 
+import "github.com/odvcencio/gotreesitter"
+
 func init() {
 	Register(LangEntry{
 		Name:           "elixir",
 		Extensions:     []string{".ex", ".exs"},
-		Language:       ElixirLanguage,
+		Language: func() *gotreesitter.Language {
+			lang := ElixirLanguage()
+			lang.ExternalScanner = ElixirExternalScanner{}
+			return lang
+		},
 		HighlightQuery: elixirHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("elixir"),
 	})

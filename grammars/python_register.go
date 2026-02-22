@@ -2,11 +2,17 @@
 
 package grammars
 
+import "github.com/odvcencio/gotreesitter"
+
 func init() {
 	Register(LangEntry{
 		Name:           "python",
 		Extensions:     []string{".py"},
-		Language:       PythonLanguage,
+		Language: func() *gotreesitter.Language {
+			lang := PythonLanguage()
+			lang.ExternalScanner = PythonExternalScanner{}
+			return lang
+		},
 		HighlightQuery: pythonHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("python"),
 	})
