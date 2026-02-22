@@ -13,6 +13,7 @@ type LangEntry struct {
 	Shebangs           []string                      // e.g. ["#!/usr/bin/env python"]
 	Language           func() *gotreesitter.Language // lazy loader
 	HighlightQuery     string
+	TagsQuery          string                                                                 // tree-sitter tags.scm query for symbol extraction
 	TokenSourceFactory func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource // nil = use DFA
 }
 
