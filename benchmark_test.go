@@ -11,8 +11,10 @@ import (
 	"github.com/odvcencio/gotreesitter/grammars"
 )
 
-// Run C baseline comparisons with:
-//   go test ./gotreesitter -tags treesitter_c_bench -bench 'Benchmark(Go|CTreeSitter)Parse' -benchmem
+// Run pure-Go benchmarks from this package.
+// C baseline benchmarks live in the cgo_harness module:
+//   cd cgo_harness
+//   go test . -run '^$' -tags treesitter_c_bench -bench BenchmarkCTreeSitter -benchmem
 
 func makeGoBenchmarkSource(funcCount int) []byte {
 	var sb strings.Builder

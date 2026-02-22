@@ -1,6 +1,6 @@
 //go:build cgo && treesitter_c_bench
 
-package gotreesitter_test
+package cgoharness
 
 import (
 	"bytes"

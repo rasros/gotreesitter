@@ -1,6 +1,6 @@
 //go:build cgo && treesitter_c_parity
 
-package gotreesitter
+package cgoharness
 
 /*
 #cgo linux LDFLAGS: -ldl
@@ -73,7 +73,12 @@ var parityCRefState = struct {
 // grammars/languages.lock commit for the given language name.
 func ParityCLanguage(name string) (*sitter.Language, error) {
 	parityCRefState.once.Do(func() {
-		lock, err := loadParityLock(filepath.Join("grammars", "languages.lock"))
+		lockPath, err := findParityLockPath()
+		if err != nil {
+			parityCRefState.err = err
+			return
+		}
+		lock, err := loadParityLock(lockPath)
 		if err != nil {
 			parityCRefState.err = err
 			return
@@ -108,6 +113,19 @@ func ParityCLanguage(name string) (*sitter.Language, error) {
 	}
 	parityCRefState.refs[name] = ref
 	return ref.lang, nil
+}
+
+func findParityLockPath() (string, error) {
+	candidates := []string{
+		filepath.Join("grammars", "languages.lock"),
+		filepath.Join("..", "grammars", "languages.lock"),
+	}
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("could not find grammars/languages.lock from cgo_harness")
 }
 
 func buildParityCRef(rootDir string, entry parityLockEntry) (*parityCRef, error) {

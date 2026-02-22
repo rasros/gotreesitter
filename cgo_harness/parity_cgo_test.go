@@ -1,6 +1,6 @@
 //go:build cgo && treesitter_c_parity
 
-package gotreesitter_test
+package cgoharness
 
 // Structural parity tests: compare gotreesitter parse trees against a native C
 // reference parser built from grammars/languages.lock commits, node-by-node.
@@ -230,7 +230,7 @@ func runParityCase(t *testing.T, tc parityCase, label string, src []byte) {
 	if err != nil {
 		t.Fatalf("[%s/%s] gotreesitter parse error: %v", tc.name, label, err)
 	}
-	cLang, err := gotreesitter.ParityCLanguage(tc.name)
+	cLang, err := ParityCLanguage(tc.name)
 	if err != nil {
 		t.Fatalf("[%s/%s] load C parser from languages.lock: %v", tc.name, label, err)
 	}
@@ -421,7 +421,7 @@ func TestParityIncrementalParse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("[%s/incremental] initial gotreesitter parse error: %v", tc.name, err)
 			}
-			cLang, err := gotreesitter.ParityCLanguage(tc.name)
+			cLang, err := ParityCLanguage(tc.name)
 			if err != nil {
 				t.Fatalf("[%s/incremental] load C parser from languages.lock: %v", tc.name, err)
 			}

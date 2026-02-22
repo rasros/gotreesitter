@@ -86,7 +86,7 @@ tree.Edit(gotreesitter.InputEdit{
     NewEndPoint: gotreesitter.Point{Row: 3, Column: 11},
 })
 
-// Incremental reparse — ~1.35 μs vs 122 μs for the CGo binding (90x faster)
+// Incremental reparse — ~1.38 μs vs 124 μs for the CGo binding (90x faster)
 tree2 := parser.ParseIncremental(src, tree)
 ```
 
@@ -113,26 +113,31 @@ Measured against [`go-tree-sitter`](https://github.com/smacker/go-tree-sitter) (
 
 ```
 goos: linux / goarch: amd64 / cpu: Intel(R) Core(TM) Ultra 9 285
-go test -run '^$' -tags treesitter_c_bench \
-  -bench 'Benchmark(GoParse|CTreeSitterGoParse)' -benchmem -count=3
+
+# pure-Go parser benchmarks (root module)
+go test -run '^$' -bench 'BenchmarkGoParse' -benchmem -count=3
+
+# C baseline benchmarks (cgo_harness module)
+cd cgo_harness
+go test . -run '^$' -tags treesitter_c_bench -bench 'BenchmarkCTreeSitterGoParse' -benchmem -count=3
 ```
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| `BenchmarkCTreeSitterGoParseFull` | 2,071,000 | 600 | 6 |
-| `BenchmarkCTreeSitterGoParseIncrementalSingleByteEdit` | 121,700 | 648 | 7 |
-| `BenchmarkCTreeSitterGoParseIncrementalNoEdit` | 119,100 | 600 | 6 |
-| `BenchmarkGoParseFull` | 1,284,000 | 14,858 | 2,495 |
-| `BenchmarkGoParseIncrementalSingleByteEdit` | 1,349 | 361 | 9 |
-| `BenchmarkGoParseIncrementalNoEdit` | 8.73 | 0 | 0 |
+| `BenchmarkCTreeSitterGoParseFull` | 2,058,000 | 600 | 6 |
+| `BenchmarkCTreeSitterGoParseIncrementalSingleByteEdit` | 124,100 | 648 | 7 |
+| `BenchmarkCTreeSitterGoParseIncrementalNoEdit` | 121,100 | 600 | 6 |
+| `BenchmarkGoParseFull` | 1,330,000 | 10,842 | 2,495 |
+| `BenchmarkGoParseIncrementalSingleByteEdit` | 1,381 | 361 | 9 |
+| `BenchmarkGoParseIncrementalNoEdit` | 8.63 | 0 | 0 |
 
 **Summary:**
 
 | Workload | gotreesitter | CGo binding | Ratio |
 |---|---:|---:|---|
-| Full parse | 1,284 μs | 2,071 μs | **~1.6x faster** |
-| Incremental (single-byte edit) | 1.35 μs | 122 μs | **~90x faster** |
-| Incremental (no-op reparse) | 8.7 ns | 119 μs | **~13,700x faster** |
+| Full parse | 1,330 μs | 2,058 μs | **~1.5x faster** |
+| Incremental (single-byte edit) | 1.38 μs | 124 μs | **~90x faster** |
+| Incremental (no-op reparse) | 8.6 ns | 121 μs | **~14,000x faster** |
 
 The incremental hot path reuses subtrees aggressively — a single-byte edit reparses in microseconds while the CGo binding pays full C-runtime and call overhead. The no-edit fast path exits on a single nil-check: zero allocations, single-digit nanoseconds.
 
@@ -140,20 +145,22 @@ The incremental hot path reuses subtrees aggressively — a single-byte edit rep
 
 ## Supported Languages
 
-90 registered languages. Run `go run ./cmd/parity_report` for the current per-language status.
+90 grammars ship in the registry. Run `go run ./cmd/parity_report` for live per-language status.
 
-Current parity-report summary for this branch:
-- `parseable=90`
-- `total=90`
-- `unsupported=0`
-- `degraded=21`
+Current summary:
+- **88 clean** — parse without errors
+- **2 degraded** — parse and produce a tree, but with recoverable syntax errors (known limitations)
+- **0 unsupported**
+
+**Full language list:**
+`ada`, `agda`, `angular`, `apex`, `arduino`, `asm`, `astro`, `authzed`, `awk`, `bash`, `bass`, `beancount`, `bibtex`, `bicep`, `bitbake`, `blade`, `brightscript`, `c`, `c_sharp`, `caddy`, `cairo`, `capnp`, `chatito`, `circom`, `cmake`, `comment`, `commonlisp`, `cooklang`, `corn`, `cpon`, `cpp`, `css`, `csv`, `cuda`, `cue`, `cylc`, `d`, `dart`, `desktop`, `devicetree`, `diff`, `disassembly`, `djot`, `dockerfile`, `doxygen`, `dtd`, `earthfile`, `ebnf`, `editorconfig`, `eds`, `eex`, `elixir`, `elm`, `elsa`, `embedded_template`, `enforce`, `erlang`, `facility`, `faust`, `fennel`, `fidl`, `firrtl`, `foam`, `go`, `graphql`, `haskell`, `hcl`, `html`, `java`, `javascript`, `json`, `julia`, `kotlin`, `lua`, `nix`, `ocaml`, `php`, `python`, `regex`, `ruby`, `rust`, `scala`, `sql`, `swift`, `toml`, `tsx`, `typescript`, `verilog`, `yaml`, `zig`
 
 **Backend types:**
 - **`dfa`** — lexer fully generated from grammar tables
 - **`dfa-partial`** — generated DFA with partial external-scanner coverage; runtime synthesizes remaining tokens
 - **`token_source`** — hand-written pure-Go lexer bridge
 
-**`degraded`** means the language parses and produces a tree, but the smoke parse still reports recoverable syntax errors (commonly missing external scanner coverage or known lexer parity gaps). Use `go run ./cmd/parity_report` to see the live degraded set.
+**`degraded`** means the language parses and produces a tree, but the smoke test reports recoverable syntax errors. Current degraded set: `comment` (parser extra-token limitation), `swift` (upstream grammar parity gap).
 
 ---
 
@@ -259,7 +266,7 @@ Most tree-sitter grammars can be added with zero hand-written code. The effort d
 
 | Tier | Description | Manual code | Examples |
 |---|---|---|---|
-| `dfa` | Lexer fully generated from grammar tables | None | `swift`, `zig` |
+| `dfa` | Lexer fully generated from grammar tables | None | `ada`, `zig`, `verilog` |
 | `dfa-partial` | Generated DFA + synthesized scanner tokens | None (auto) | `python`, `bash`, `ruby` |
 | `full` | Hand-written external scanner required | Yes | `go`, `c`, `rust` |
 
