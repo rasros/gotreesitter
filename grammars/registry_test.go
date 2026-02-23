@@ -1,6 +1,10 @@
 package grammars
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/odvcencio/gotreesitter"
+)
 
 func TestDetectLanguageGo(t *testing.T) {
 	entry := DetectLanguage("main.go")
@@ -234,5 +238,44 @@ func TestAuditParseSupportIncludesRustGenericTokenSource(t *testing.T) {
 	}
 	if rustReport.Backend != ParseBackendTokenSource {
 		t.Fatalf("expected rust backend %q, got %q", ParseBackendTokenSource, rustReport.Backend)
+	}
+}
+
+func TestCoreLanguagesHaveCompilableTagsQuery(t *testing.T) {
+	core := []string{
+		"go",
+		"python",
+		"javascript",
+		"typescript",
+		"tsx",
+		"rust",
+		"java",
+		"c",
+		"cpp",
+	}
+
+	entries := AllLanguages()
+	entryByName := make(map[string]LangEntry, len(entries))
+	for _, entry := range entries {
+		entryByName[entry.Name] = entry
+	}
+
+	for _, name := range core {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			entry, ok := entryByName[name]
+			if !ok {
+				t.Fatalf("expected %q language to be registered", name)
+			}
+			if entry.Language == nil {
+				t.Fatalf("expected %q language loader", name)
+			}
+			if entry.TagsQuery == "" {
+				t.Fatalf("expected non-empty TagsQuery for %q", name)
+			}
+			if _, err := gotreesitter.NewTagger(entry.Language(), entry.TagsQuery); err != nil {
+				t.Fatalf("compile tags query for %q: %v", name, err)
+			}
+		})
 	}
 }

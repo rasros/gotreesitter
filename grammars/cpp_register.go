@@ -8,8 +8,31 @@ func init() {
 		Extensions:     []string{".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".h"},
 		Language:       CppLanguage,
 		HighlightQuery: cppHighlightQuery,
+		TagsQuery:      cppTagsQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("cpp"),
 	})
 }
+
+const cppTagsQuery = `(function_declarator
+  (qualified_identifier
+    (identifier) @name)) @definition.function
+(function_declarator
+  (field_identifier) @name) @definition.function
+(function_declarator
+  (identifier) @name) @definition.function
+(template_function
+  (identifier) @name) @definition.function
+(template_method
+  (field_identifier) @name) @definition.method
+(class_specifier
+  (type_identifier) @name) @definition.class
+(struct_specifier
+  (type_identifier) @name) @definition.type
+(call_expression
+  (identifier) @name) @reference.call
+(call_expression
+  (qualified_identifier
+    (identifier) @name)) @reference.call
+`
 
 const cppHighlightQuery = "; Functions\n\n(call_expression\n  function: (qualified_identifier\n    name: (identifier) @function))\n\n(template_function\n  name: (identifier) @function)\n\n(template_method\n  name: (field_identifier) @function)\n\n(template_function\n  name: (identifier) @function)\n\n(function_declarator\n  declarator: (qualified_identifier\n    name: (identifier) @function))\n\n(function_declarator\n  declarator: (field_identifier) @function)\n\n; Types\n\n((namespace_identifier) @type\n (#match? @type \"^[A-Z]\"))\n\n(auto) @type\n\n; Constants\n\n(this) @variable.builtin\n(null \"nullptr\" @constant)\n\n; Modules\n(module_name\n  (identifier) @module)\n\n; Keywords\n\n[\n \"catch\"\n \"class\"\n \"co_await\"\n \"co_return\"\n \"co_yield\"\n \"constexpr\"\n \"constinit\"\n \"consteval\"\n \"delete\"\n \"explicit\"\n \"final\"\n \"friend\"\n \"mutable\"\n \"namespace\"\n \"noexcept\"\n \"new\"\n \"override\"\n \"private\"\n \"protected\"\n \"public\"\n \"template\"\n \"throw\"\n \"try\"\n \"typename\"\n \"using\"\n \"concept\"\n \"requires\"\n \"virtual\"\n \"import\"\n \"export\"\n \"module\"\n] @keyword\n\n; Strings\n\n(raw_string_literal) @string\n"

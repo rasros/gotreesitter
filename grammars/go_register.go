@@ -8,8 +8,26 @@ func init() {
 		Extensions:     []string{".go"},
 		Language:       GoLanguage,
 		HighlightQuery: goHighlightQuery,
+		TagsQuery:      goTagsQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("go"),
 	})
 }
+
+const goTagsQuery = `(function_declaration
+  (identifier) @name) @definition.function
+(method_declaration
+  (field_identifier) @name) @definition.method
+(type_declaration
+  (type_spec
+    (type_identifier) @name)) @definition.type
+(type_declaration
+  (type_alias
+    (type_identifier) @name)) @definition.type
+(call_expression
+  (identifier) @name) @reference.call
+(call_expression
+  (selector_expression
+    (field_identifier) @name)) @reference.call
+`
 
 const goHighlightQuery = "; Function calls\n\n(call_expression\n  function: (identifier) @function)\n\n(call_expression\n  function: (identifier) @function.builtin\n  (#match? @function.builtin \"^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$\"))\n\n(call_expression\n  function: (selector_expression\n    field: (field_identifier) @function.method))\n\n; Function definitions\n\n(function_declaration\n  name: (identifier) @function)\n\n(method_declaration\n  name: (field_identifier) @function.method)\n\n; Identifiers\n\n(type_identifier) @type\n(field_identifier) @property\n(identifier) @variable\n\n; Operators\n\n[\n  \"--\"\n  \"-\"\n  \"-=\"\n  \":=\"\n  \"!\"\n  \"!=\"\n  \"...\"\n  \"*\"\n  \"*\"\n  \"*=\"\n  \"/\"\n  \"/=\"\n  \"&\"\n  \"&&\"\n  \"&=\"\n  \"%\"\n  \"%=\"\n  \"^\"\n  \"^=\"\n  \"+\"\n  \"++\"\n  \"+=\"\n  \"<-\"\n  \"<\"\n  \"<<\"\n  \"<<=\"\n  \"<=\"\n  \"=\"\n  \"==\"\n  \">\"\n  \">=\"\n  \">>\"\n  \">>=\"\n  \"|\"\n  \"|=\"\n  \"||\"\n  \"~\"\n] @operator\n\n; Keywords\n\n[\n  \"break\"\n  \"case\"\n  \"chan\"\n  \"const\"\n  \"continue\"\n  \"default\"\n  \"defer\"\n  \"else\"\n  \"fallthrough\"\n  \"for\"\n  \"func\"\n  \"go\"\n  \"goto\"\n  \"if\"\n  \"import\"\n  \"interface\"\n  \"map\"\n  \"package\"\n  \"range\"\n  \"return\"\n  \"select\"\n  \"struct\"\n  \"switch\"\n  \"type\"\n  \"var\"\n] @keyword\n\n; Literals\n\n[\n  (interpreted_string_literal)\n  (raw_string_literal)\n  (rune_literal)\n] @string\n\n(escape_sequence) @escape\n\n[\n  (int_literal)\n  (float_literal)\n  (imaginary_literal)\n] @number\n\n[\n  (true)\n  (false)\n  (nil)\n  (iota)\n] @constant.builtin\n\n(comment) @comment\n"
