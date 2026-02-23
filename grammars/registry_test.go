@@ -279,3 +279,22 @@ func TestCoreLanguagesHaveCompilableTagsQuery(t *testing.T) {
 		})
 	}
 }
+
+func TestInferredTagsQueryCoverage(t *testing.T) {
+	entries := AllLanguages()
+	if len(entries) == 0 {
+		t.Fatal("expected registered languages")
+	}
+
+	withTags := 0
+	for _, entry := range entries {
+		if entry.TagsQuery != "" {
+			withTags++
+		}
+	}
+
+	// Core set (9) is explicit. Inference should expand this materially.
+	if withTags < 30 {
+		t.Fatalf("expected inferred tags query coverage to be >=30 languages, got %d", withTags)
+	}
+}

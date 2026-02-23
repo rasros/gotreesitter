@@ -58,5 +58,13 @@ func DetectLanguageByShebang(firstLine string) *LangEntry {
 
 // AllLanguages returns all registered languages.
 func AllLanguages() []LangEntry {
-	return registry
+	out := make([]LangEntry, len(registry))
+	copy(out, registry)
+	for i := range out {
+		if strings.TrimSpace(out[i].TagsQuery) != "" {
+			continue
+		}
+		out[i].TagsQuery = inferredTagsQuery(out[i])
+	}
+	return out
 }
