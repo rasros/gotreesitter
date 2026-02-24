@@ -163,10 +163,6 @@ func defaultTokenSourceFactory(name string) func(src []byte, lang *gotreesitter.
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewGenericTokenSourceOrEOF(src, lang)
 		}
-	case "swift":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewGenericTokenSourceOrEOF(src, lang)
-		}
 	case "vhdl":
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewGenericTokenSourceOrEOF(src, lang)
@@ -176,10 +172,6 @@ func defaultTokenSourceFactory(name string) func(src []byte, lang *gotreesitter.
 			return NewGenericTokenSourceOrEOF(src, lang)
 		}
 	case "svelte":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewGenericTokenSourceOrEOF(src, lang)
-		}
-	case "vimdoc":
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewGenericTokenSourceOrEOF(src, lang)
 		}
