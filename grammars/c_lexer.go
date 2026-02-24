@@ -158,7 +158,7 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 		}
 		if tok, ok := ts.literalToken(); ok {
 			// Detect #define start (needs preproc_arg + line terminator)
-			if ts.isPreprocDefine(tok.Text) {
+			if ts.isPreprocDirective(tok.Text) {
 				ts.preprocState = 1
 			}
 			return tok
@@ -575,10 +575,17 @@ func (ts *CTokenSource) preprocArgToken() (gotreesitter.Token, bool) {
 	return makeToken(ts.preprocArgSymbol, ts.src, start, ts.cur.offset, startPt, ts.cur.point()), true
 }
 
-// isPreprocDefine returns true for #define directives which need
-// preproc_arg and preproc_include_token2 (line terminator) tokens.
-func (ts *CTokenSource) isPreprocDefine(text string) bool {
-	return text == "#define"
+// isPreprocDirective returns true for "flat" preprocessor directives whose
+// grammar productions end with token.immediate(\n) — compiled as
+// preproc_include_token2. Conditional directives (#ifdef, #ifndef, #if,
+// #elif, #else, #endif) handle newlines through lex mode switching and
+// must NOT receive an explicit \n token.
+func (ts *CTokenSource) isPreprocDirective(text string) bool {
+	switch text {
+	case "#define", "#include", "#pragma", "#undef", "#error", "#warning":
+		return true
+	}
+	return false
 }
 
 func isCIdentStart(b byte) bool {
