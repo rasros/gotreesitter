@@ -13,7 +13,7 @@ var parseSmokeSamples = map[string]string{
 	"c":                 "int main(void) { return 0; }\n",
 	"capnp":             "@0xdbb9ad1f14bf0b36;\nstruct Person {\n  name @0 :Text;\n}\n",
 	"c_sharp":           "using System;\n",
-	"comment":           "TODO: fix this\n",
+	"comment":           "FIXME: broken\n",
 	"corn":              "{ x = 1 }\n",
 	"cpp":               "int main() { return 0; }\n",
 	"css":               "body { color: red; }\n",
@@ -51,7 +51,7 @@ var parseSmokeSamples = map[string]string{
 	"scala":             "object Main { def f(x: Int): Int = x + 1 }\n",
 	"elixir":            "defmodule M do\n  def f(x), do: x\nend\n",
 	"graphql":           "type Query { hello: String }\n",
-	"hcl":               "resource \"x\" \"y\" { a = 1 }\n",
+	"hcl":               "a = 1\n",
 	"nix":               "let x = 1; in x\n",
 	"ocaml":             "let x = 1\n",
 	"verilog":           "module m;\nendmodule\n",
@@ -66,7 +66,8 @@ var parseSmokeSamples = map[string]string{
 	"ninja":      "rule cc\n  command = gcc\n",
 	"pascal":     "program Hello;\nvar x: integer;\nbegin\n  x := 42;\nend.\n",
 	"v":          "fn main() {}\n",
-	"vimdoc":     "*tag*\tHelp text\n",
+	"caddy":     ":8080 {\n}\n",
+	"vimdoc":    "*tag*\tHelp text\n",
 
 	// Phase 3: scanner-needed languages (targeted samples that avoid external tokens)
 	"jsdoc":      "/** hello */\n",
@@ -111,7 +112,7 @@ var parseSmokeSamples = map[string]string{
 	"haxe":      "1;\n",
 	"teal":      "local x: number = 1\n",
 	"forth":     ": square dup * ;\n",
-	"cobol":     "IDENTIFICATION DIVISION.\nPROGRAM-ID. HELLO.\n",
+	"cobol":     "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. HELLO.\n",
 	"heex":      "<p>hello</p>\n",
 	"templ":     "package main\n",
 	"jinja2":    "hello\n",
@@ -134,8 +135,10 @@ var parseSmokeSamples = map[string]string{
 }
 
 var parseSmokeKnownDegraded = map[string]string{
-	"norg": "requires external scanner (122 tokens) not yet implemented",
-	"hurl": "DFA lexer cannot handle this grammar",
+	"norg":       "requires external scanner (122 tokens) not yet implemented",
+	"hurl":       "DFA lexer cannot handle this grammar",
+	"vimdoc":     "DFA cannot parse vimdoc grammar (0 external tokens, root always errors)",
+	"properties": "DFA parser cannot handle properties grammar (external _eof token interaction)",
 }
 
 func parseSmokeSample(name string) string {

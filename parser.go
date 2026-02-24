@@ -967,10 +967,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				}
 			}
 			for i := actualEntryCount - 1; i >= 0; i-- {
-				// Hidden (anonymous, non-visible) leaf nodes should not extend
-				// visible parent ranges — e.g. automatic-semicolon wrappers.
-				excludeHidden := true
-				if b, pt, ok := spanEndExcludingExtra(p.language, s.entries[start+i].node, excludeHidden); ok {
+				if b, pt, ok := spanEndExcludingExtra(p.language, s.entries[start+i].node); ok {
 					rawEndByte = b
 					rawEndPoint = pt
 					rawHasEnd = true
@@ -1171,49 +1168,27 @@ func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol)
 	return cloned
 }
 
-func spanStartExcludingExtra(lang *Language, n *Node) (uint32, Point, bool) {
+func spanStartExcludingExtra(_ *Language, n *Node) (uint32, Point, bool) {
 	if n == nil {
 		return 0, Point{}, false
 	}
 	if n.isExtra {
 		return 0, Point{}, false
 	}
-	if len(n.children) == 0 {
-		if !symbolVisible(lang, n.symbol) {
-			return 0, Point{}, false
-		}
-		return n.startByte, n.startPoint, true
-	}
-	for i := 0; i < len(n.children); i++ {
-		if b, pt, ok := spanStartExcludingExtra(lang, n.children[i]); ok {
-			return b, pt, true
-		}
-	}
-	if !symbolVisible(lang, n.symbol) {
-		return 0, Point{}, false
-	}
+	// All non-extra nodes contribute their range to the parent.
+	// Hidden (anonymous) terminals and parent nodes with already-computed
+	// ranges are all valid span contributors.  Only extras are excluded.
 	return n.startByte, n.startPoint, true
 }
 
-func spanEndExcludingExtra(lang *Language, n *Node, excludeHidden bool) (uint32, Point, bool) {
+func spanEndExcludingExtra(_ *Language, n *Node) (uint32, Point, bool) {
 	if n == nil {
 		return 0, Point{}, false
 	}
 	if n.isExtra {
 		return 0, Point{}, false
 	}
-	if len(n.children) == 0 {
-		if excludeHidden && !symbolVisible(lang, n.symbol) {
-			return 0, Point{}, false
-		}
-		return n.endByte, n.endPoint, true
-	}
-	for i := len(n.children) - 1; i >= 0; i-- {
-		if b, pt, ok := spanEndExcludingExtra(lang, n.children[i], excludeHidden); ok {
-			return b, pt, true
-		}
-	}
-	return 0, Point{}, false
+	return n.endByte, n.endPoint, true
 }
 
 // buildFieldIDs creates the field ID slice for a reduce action.
@@ -1361,10 +1336,12 @@ func (p *Parser) lookupGoto(state StateID, sym Symbol) StateID {
 
 	// ts2go-generated grammars encode nonterminal GOTO values directly as
 	// parser state IDs. Hand-built grammars encode parse-action indices.
+	// ts2go always sets InitialState=1 (tree-sitter convention); hand-built
+	// grammars default to InitialState=0.
 	if p.language.TokenCount > 0 &&
 		uint32(sym) >= p.language.TokenCount &&
 		p.language.StateCount > 0 &&
-		(p.language.LargeStateCount > 0 || len(p.language.SmallParseTableMap) > 0) {
+		p.language.InitialState > 0 {
 		return StateID(raw)
 	}
 
@@ -1433,6 +1410,58 @@ func (p *Parser) buildResult(stack []stackEntry, source []byte, arena *nodeArena
 		}
 		root := newParentNodeInArena(arena, expectedRootSymbol, true, rootChildren, nil, 0)
 		return newTreeWithArenas(root, source, p.language, arena, borrowed)
+	}
+
+	// When multiple nodes remain on the stack, check whether all but one
+	// are extras (e.g. leading whitespace/comments). If so, fold the extras
+	// into the real root rather than wrapping everything in an error node.
+	var realRoot *Node
+	var extras []*Node
+	for _, n := range nodes {
+		if n.isExtra {
+			extras = append(extras, n)
+		} else {
+			if realRoot != nil {
+				realRoot = nil // more than one non-extra → genuine error
+				break
+			}
+			realRoot = n
+		}
+	}
+	if realRoot != nil && len(extras) > 0 {
+		// Fold extras into the real root as leading/trailing children.
+		merged := make([]*Node, 0, len(extras)+len(realRoot.children))
+		for _, e := range extras {
+			if e.startByte <= realRoot.startByte {
+				merged = append(merged, e)
+			}
+		}
+		merged = append(merged, realRoot.children...)
+		for _, e := range extras {
+			if e.startByte > realRoot.startByte {
+				merged = append(merged, e)
+			}
+		}
+		if arena != nil {
+			out := arena.allocNodeSlice(len(merged))
+			copy(out, merged)
+			merged = out
+		}
+		realRoot.children = merged
+		// Extend root range to cover the extras.
+		for _, e := range extras {
+			if e.startByte < realRoot.startByte {
+				realRoot.startByte = e.startByte
+				realRoot.startPoint = e.startPoint
+			}
+			if e.endByte > realRoot.endByte {
+				realRoot.endByte = e.endByte
+				realRoot.endPoint = e.endPoint
+			}
+		}
+		if !hasExpectedRoot || realRoot.symbol == expectedRootSymbol {
+			return newTreeWithArenas(realRoot, source, p.language, arena, borrowed)
+		}
 	}
 
 	rootChildren := nodes

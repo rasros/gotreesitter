@@ -332,7 +332,7 @@ go test ./... -race -count=1
 
 ## Roadmap
 
-**Current: v0.1.0** — 205 grammars, stable parser, incremental reparsing, query engine, highlighting, tagging.
+**Current: v0.4.0** — 205 grammars, stable parser, incremental reparsing, query engine, highlighting, tagging.
 
 **Next:**
 
