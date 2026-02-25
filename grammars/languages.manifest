@@ -256,6 +256,9 @@ matlab https://github.com/acristoffers/tree-sitter-matlab src .m,.mat
 sparql https://github.com/GordianDziwis/tree-sitter-sparql src .rq,.sparql
 turtle https://github.com/GordianDziwis/tree-sitter-turtle src .ttl
 
+# WebAssembly
+wat https://github.com/wasm-lsp/tree-sitter-wasm wat/src .wat,.wast
+
 # Phase 7: Missing popular languages
 perl https://github.com/tree-sitter-perl/tree-sitter-perl 0c24d001dd1921e418fb933d208a7bd7dd3f923a src .pl,.pm
 prolog https://github.com/Rukiza/tree-sitter-prolog src .pl,.pro

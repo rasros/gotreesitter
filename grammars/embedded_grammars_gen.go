@@ -999,6 +999,11 @@ func VueLanguage() *gotreesitter.Language {
 	return loadEmbeddedLanguage("vue.bin")
 }
 
+// WatLanguage returns the wat language definition.
+func WatLanguage() *gotreesitter.Language {
+	return loadEmbeddedLanguage("wat.bin")
+}
+
 // WgslLanguage returns the wgsl language definition.
 func WgslLanguage() *gotreesitter.Language {
 	return loadEmbeddedLanguage("wgsl.bin")
