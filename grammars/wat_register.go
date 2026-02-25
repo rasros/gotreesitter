@@ -3,7 +3,12 @@
 package grammars
 
 const watTagsQuery = `
-(identifier) @name @definition.function
+(module_field_func (identifier) @name) @definition.function
+(module_field_global (identifier) @name) @definition.variable
+(module_field_type (identifier) @name) @definition.type
+(module_field_memory (identifier) @name) @definition.variable
+(module_field_table (identifier) @name) @definition.variable
+(module_field_import (import_desc (import_desc_func_type (identifier) @name))) @reference.call
 `
 
 func init() {
