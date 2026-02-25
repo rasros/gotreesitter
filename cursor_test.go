@@ -635,3 +635,46 @@ func TestTreeCursorBoundTree(t *testing.T) {
 		t.Fatalf("expected 'function_declaration', got %q", typ)
 	}
 }
+
+func BenchmarkTreeCursorDFS(b *testing.B) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+	c := NewTreeCursorFromTree(tree)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.Reset(tree.RootNode())
+		reachedRoot := false
+		for !reachedRoot {
+			_ = c.CurrentNode()
+			if c.GotoFirstChild() {
+				continue
+			}
+			if c.GotoNextSibling() {
+				continue
+			}
+			for {
+				if !c.GotoParent() {
+					reachedRoot = true
+					break
+				}
+				if c.GotoNextSibling() {
+					break
+				}
+			}
+		}
+	}
+}
+
+func BenchmarkWalkDFS(b *testing.B) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Walk(tree.RootNode(), func(n *Node, depth int) WalkAction {
+			_ = n
+			return WalkContinue
+		})
+	}
+}
