@@ -332,7 +332,14 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 	defer p.reuseMu.Unlock()
 
 	reuse := p.reuseCursor.reset(oldTree, source, &p.reuseScratch)
-	tree := p.parseInternal(source, ts, reuse, oldTree, arenaClassIncremental)
+	arenaClass := arenaClassIncremental
+	// Large files can quickly outgrow incremental arena defaults and trigger
+	// repeated fallback allocations; use full-parse slab sizing in that case.
+	const incrementalUseFullArenaThreshold = 128 * 1024
+	if len(source) >= incrementalUseFullArenaThreshold {
+		arenaClass = arenaClassFull
+	}
+	tree := p.parseInternal(source, ts, reuse, oldTree, arenaClass)
 	if reuse != nil {
 		reuse.commitScratch(&p.reuseScratch)
 	}
@@ -840,8 +847,8 @@ func parseFullArenaNodeCapacity(sourceLen, hint int) int {
 	}
 	// Conservative first-pass sizing. We refine this with adaptive hints
 	// from observed full-parse node usage.
-	estimate := sourceLen * 2
-	const maxPreallocNodes = 256 * 1024
+	estimate := sourceLen * 8
+	const maxPreallocNodes = 2_000_000
 	if estimate > maxPreallocNodes {
 		estimate = maxPreallocNodes
 	}
@@ -891,12 +898,40 @@ func parseFullEntryScratchCapacity(sourceLen int) int {
 	if sourceLen <= 0 {
 		return defaultStackEntrySlabCap
 	}
-	estimate := sourceLen * 8
+	estimate := sourceLen * 16
 	if estimate < defaultStackEntrySlabCap {
 		estimate = defaultStackEntrySlabCap
 	}
 	// Keep initial scratch growth bounded; larger capacities are still
 	// reached on demand and retained up to maxRetainedStackEntryCap.
+	const maxPreallocEntries = 1 * 1024 * 1024
+	if estimate > maxPreallocEntries {
+		estimate = maxPreallocEntries
+	}
+	return estimate
+}
+
+func parseIncrementalArenaNodeCapacity(sourceLen int) int {
+	base := nodeCapacityForClass(arenaClassIncremental)
+	if sourceLen <= 0 {
+		return base
+	}
+	estimate := sourceLen * 4
+	const maxPreallocNodes = 512 * 1024
+	if estimate > maxPreallocNodes {
+		estimate = maxPreallocNodes
+	}
+	return max(base, estimate)
+}
+
+func parseIncrementalEntryScratchCapacity(sourceLen int) int {
+	if sourceLen <= 0 {
+		return defaultStackEntrySlabCap
+	}
+	estimate := sourceLen * 8
+	if estimate < defaultStackEntrySlabCap {
+		estimate = defaultStackEntrySlabCap
+	}
 	const maxPreallocEntries = 256 * 1024
 	if estimate > maxPreallocEntries {
 		estimate = maxPreallocEntries
@@ -996,9 +1031,13 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			p.recordFullArenaUsage(arena.used)
 		}()
 	}
-	if arenaClass == arenaClassFull {
+	switch arenaClass {
+	case arenaClassFull:
 		arena.ensureNodeCapacity(parseFullArenaNodeCapacity(len(source), p.fullArenaHintCapacity()))
 		scratch.entries.ensureInitialCap(parseFullEntryScratchCapacity(len(source)))
+	case arenaClassIncremental:
+		arena.ensureNodeCapacity(parseIncrementalArenaNodeCapacity(len(source)))
+		scratch.entries.ensureInitialCap(parseIncrementalEntryScratchCapacity(len(source)))
 	}
 	reusedAny := false
 

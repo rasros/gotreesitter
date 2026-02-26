@@ -91,7 +91,19 @@ func newGLRStackWithScratch(initial StateID, scratch *glrEntryScratch) glrStack 
 	if scratch == nil {
 		return newGLRStack(initial)
 	}
-	entries := scratch.allocWithCap(1, 8)
+	initialCap := 8
+	if len(scratch.slabs) > 0 {
+		// Reuse slab headroom for the primary stack to avoid repeated
+		// grow/copy churn on deep parses.
+		initialCap = len(scratch.slabs[0].data)
+		const maxInitialCap = 256 * 1024
+		if initialCap > maxInitialCap {
+			initialCap = maxInitialCap
+		}
+	} else {
+		initialCap = defaultStackEntrySlabCap
+	}
+	entries := scratch.allocWithCap(1, initialCap)
 	entries[0] = stackEntry{state: initial}
 	return glrStack{entries: entries, cacheEntries: true}
 }
