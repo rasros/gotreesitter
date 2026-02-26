@@ -193,5 +193,8 @@ func (s *gssScratch) reset() {
 }
 
 func (s *glrStack) toGSS(scratch *gssScratch) gssStack {
+	if s.gss.head != nil {
+		return s.gss.clone()
+	}
 	return buildGSSStack(s.entries, scratch)
 }

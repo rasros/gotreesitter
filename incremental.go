@@ -180,7 +180,7 @@ func nodeBytesEqual(start, end uint32, oldSource, newSource []byte) bool {
 // tryReuseSubtree attempts to reuse an old subtree at the current lookahead.
 // On success it appends the reused node to the stack and returns the first
 // lookahead token that begins at or after the node's end byte.
-func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, idx *reuseCursor, entryScratch *glrEntryScratch) (Token, bool) {
+func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, idx *reuseCursor, entryScratch *glrEntryScratch, gssScratch *gssScratch) (Token, bool) {
 	candidates := idx.candidates(lookahead.StartByte)
 	if len(candidates) == 0 {
 		return lookahead, false
@@ -188,12 +188,22 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 
 	state := s.top().state
 	for _, n := range candidates {
+		// Reuse only leaf nodes for now. Non-leaf reuse is more efficient
+		// but can violate parser-state continuity in some grammars.
+		if n.ChildCount() > 0 {
+			// Preserve full-root reuse on undo when bytes are identical.
+			if !(n.startByte == 0 &&
+				n.endByte == idx.sourceLen &&
+				nodeBytesEqual(n.startByte, n.endByte, idx.oldSource, idx.newSource)) {
+				continue
+			}
+		}
 		nextState, ok := p.reuseTargetState(state, n, lookahead)
 		if !ok {
 			continue
 		}
 
-		s.push(nextState, n, entryScratch)
+		s.push(nextState, n, entryScratch, gssScratch)
 
 		// If the reused node reaches EOF, we can synthesize EOF directly
 		// instead of consuming every trailing token.
@@ -208,6 +218,12 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 			}, true
 		}
 
+		// dfaTokenSource fast skip does not preserve external-scanner state.
+		// Advance token-by-token in that case to keep scanner payload in sync.
+		if dts, ok := ts.(*dfaTokenSource); ok && dts.language != nil && dts.language.ExternalScanner != nil {
+			return advanceTokenSourceTo(ts, lookahead, n.EndByte()), true
+		}
+
 		if skipper, ok := ts.(PointSkippableTokenSource); ok {
 			return skipper.SkipToByteWithPoint(n.EndByte(), n.EndPoint()), true
 		}
@@ -215,14 +231,23 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 			return skipper.SkipToByte(n.EndByte()), true
 		}
 
-		tok := lookahead
-		for tok.Symbol != 0 && tok.StartByte < n.EndByte() {
-			tok = ts.Next()
-		}
-		return tok, true
+		return advanceTokenSourceTo(ts, lookahead, n.EndByte()), true
 	}
 
 	return lookahead, false
+}
+
+func advanceTokenSourceTo(ts TokenSource, lookahead Token, endByte uint32) Token {
+	tok := lookahead
+	for tok.Symbol != 0 && tok.EndByte <= endByte {
+		next := ts.Next()
+		// Defensive break for non-advancing token sources.
+		if next.StartByte == tok.StartByte && next.EndByte == tok.EndByte {
+			return next
+		}
+		tok = next
+	}
+	return tok
 }
 
 func (p *Parser) reuseTargetState(state StateID, n *Node, lookahead Token) (StateID, bool) {
@@ -236,18 +261,20 @@ func (p *Parser) reuseTargetState(state StateID, n *Node, lookahead Token) (Stat
 		if action == nil || len(action.Actions) == 0 {
 			return 0, false
 		}
-
+		// Reuse only on unambiguous single-shift entries; ambiguous entries
+		// require full GLR branching to preserve correctness.
+		if len(action.Actions) != 1 {
+			return 0, false
+		}
+		shift := action.Actions[0]
+		if shift.Type != ParseActionShift {
+			return 0, false
+		}
 		// Extra-token shifts keep the parser state unchanged.
-		if action.Actions[0].Type == ParseActionShift && action.Actions[0].Extra {
+		if shift.Extra {
 			return state, true
 		}
-
-		for _, act := range action.Actions {
-			if act.Type == ParseActionShift {
-				return act.State, true
-			}
-		}
-		return 0, false
+		return shift.State, true
 	}
 
 	gotoState := p.lookupGoto(state, n.Symbol())

@@ -62,20 +62,21 @@ func TestGSSStackMaterializeAndByteOffset(t *testing.T) {
 }
 
 func TestGLRStackToGSS(t *testing.T) {
+	var gScratch gssScratch
 	var entryScratch glrEntryScratch
 	s := newGLRStackWithScratch(1, &entryScratch)
-	s.push(2, nil, &entryScratch)
-	s.push(3, nil, &entryScratch)
+	s.push(2, nil, &entryScratch, &gScratch)
+	s.push(3, nil, &entryScratch, &gScratch)
 
-	var gssScratch gssScratch
-	gs := s.toGSS(&gssScratch)
+	gs := s.toGSS(&gScratch)
 	mat := gs.materialize(nil)
-	if len(mat) != len(s.entries) {
-		t.Fatalf("materialized len = %d, want %d", len(mat), len(s.entries))
+	want := s.ensureEntries(&entryScratch)
+	if len(mat) != len(want) {
+		t.Fatalf("materialized len = %d, want %d", len(mat), len(want))
 	}
 	for i := range mat {
-		if mat[i].state != s.entries[i].state {
-			t.Fatalf("state[%d] = %d, want %d", i, mat[i].state, s.entries[i].state)
+		if mat[i].state != want[i].state {
+			t.Fatalf("state[%d] = %d, want %d", i, mat[i].state, want[i].state)
 		}
 	}
 }

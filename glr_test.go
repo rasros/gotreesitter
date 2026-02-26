@@ -32,23 +32,49 @@ func TestMergeStacksSameTopState(t *testing.T) {
 	}
 }
 
+func TestMergeStacksSameStateDifferentByteOffset(t *testing.T) {
+	s1 := newGLRStack(StateID(5))
+	s1.push(5, NewLeafNode(1, true, 0, 3, Point{}, Point{Column: 3}), nil, nil)
+
+	s2 := newGLRStack(StateID(5))
+	s2.push(5, NewLeafNode(1, true, 0, 7, Point{}, Point{Column: 7}), nil, nil)
+
+	result := mergeStacks([]glrStack{s1, s2})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 stacks (distinct byte offsets), got %d", len(result))
+	}
+}
+
+func TestMergeStacksSameStateDifferentEntries(t *testing.T) {
+	s1 := newGLRStack(StateID(5))
+	s1.push(5, NewLeafNode(1, true, 0, 3, Point{}, Point{Column: 3}), nil, nil)
+
+	s2 := newGLRStack(StateID(5))
+	s2.push(5, NewLeafNode(2, true, 0, 3, Point{}, Point{Column: 3}), nil, nil)
+
+	result := mergeStacks([]glrStack{s1, s2})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 stacks (distinct parse paths), got %d", len(result))
+	}
+}
+
 func TestGLRStackClone(t *testing.T) {
 	s := newGLRStack(StateID(1))
-	s.entries = append(s.entries, stackEntry{state: 2, node: nil})
+	s.push(2, nil, nil, nil)
 	s.score = 5
 
 	clone := s.clone()
-	clone.entries = append(clone.entries, stackEntry{state: 3, node: nil})
+	clone.push(3, nil, nil, nil)
 	clone.score = 10
 
-	if len(s.entries) != 2 {
-		t.Errorf("original entries modified: len=%d, want 2", len(s.entries))
+	if s.depth() != 2 {
+		t.Errorf("original entries modified: len=%d, want 2", s.depth())
 	}
 	if s.score != 5 {
 		t.Errorf("original score modified: %d, want 5", s.score)
 	}
-	if len(clone.entries) != 3 {
-		t.Errorf("clone entries wrong: len=%d, want 3", len(clone.entries))
+	if clone.depth() != 3 {
+		t.Errorf("clone entries wrong: len=%d, want 3", clone.depth())
 	}
 }
 

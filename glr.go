@@ -5,6 +5,10 @@ package gotreesitter
 // the parser forks: one glrStack per alternative. Stacks that hit errors
 // are dropped; surviving stacks are merged when their top states converge.
 type glrStack struct {
+	gss gssStack
+	// entries is the fast-path contiguous stack used before any GLR forks.
+	// Once a stack is promoted to GSS (shared-prefix), entries becomes an
+	// optional cached materialization for indexed reduce/recover access.
 	entries []stackEntry
 	// byteOffset tracks the end byte of the latest non-nil node on stack.
 	// It avoids rescanning entries in merge/retention hot paths.
@@ -69,7 +73,7 @@ func (s *glrEntryScratch) ensureInitialCap(minEntries int) {
 
 func newGLRStack(initial StateID) glrStack {
 	return glrStack{
-		entries: []stackEntry{{state: initial, node: nil}},
+		entries: []stackEntry{{state: initial}},
 	}
 }
 
@@ -82,45 +86,120 @@ func newGLRStackWithScratch(initial StateID, scratch *glrEntryScratch) glrStack 
 	return glrStack{entries: entries}
 }
 
+func (s *glrStack) ensureGSS(scratch *gssScratch) {
+	if s.gss.head != nil || len(s.entries) == 0 {
+		return
+	}
+	s.gss = buildGSSStack(s.entries, scratch)
+}
+
+func (s *glrStack) depth() int {
+	if s.gss.head != nil {
+		return s.gss.len()
+	}
+	return len(s.entries)
+}
+
 func (s *glrStack) top() stackEntry {
+	if s.gss.head != nil {
+		return s.gss.top()
+	}
+	if len(s.entries) == 0 {
+		return stackEntry{}
+	}
 	return s.entries[len(s.entries)-1]
 }
 
 func (s *glrStack) clone() glrStack {
-	entries := make([]stackEntry, len(s.entries))
-	copy(entries, s.entries)
-	return glrStack{entries: entries, byteOffset: s.byteOffset, score: s.score}
-}
-
-func (s *glrStack) cloneWithScratch(scratch *glrEntryScratch) glrStack {
-	if scratch == nil {
-		return s.clone()
+	if s.gss.head == nil && len(s.entries) > 0 {
+		entries := make([]stackEntry, len(s.entries))
+		copy(entries, s.entries)
+		return glrStack{entries: entries, byteOffset: s.byteOffset, score: s.score}
 	}
-	entries := scratch.clone(s.entries)
-	return glrStack{entries: entries, byteOffset: s.byteOffset, score: s.score}
+	s.ensureGSS(nil)
+	return glrStack{gss: s.gss.clone(), byteOffset: s.byteOffset, score: s.score}
 }
 
-func (s *glrStack) push(state StateID, node *Node, scratch *glrEntryScratch) {
-	if scratch == nil {
-		s.entries = append(s.entries, stackEntry{state: state, node: node})
-		if node != nil {
-			s.byteOffset = node.endByte
+func (s *glrStack) cloneWithScratch(scratch *gssScratch) glrStack {
+	s.ensureGSS(scratch)
+	return glrStack{gss: s.gss.clone(), byteOffset: s.byteOffset, score: s.score}
+}
+
+func (s *glrStack) ensureEntries(entryScratch *glrEntryScratch) []stackEntry {
+	if s.entries != nil {
+		return s.entries
+	}
+	if s.gss.head == nil {
+		return nil
+	}
+	depth := s.gss.len()
+	if depth == 0 {
+		return nil
+	}
+	if entryScratch != nil {
+		dst := entryScratch.allocWithCap(depth, depth+1)
+		s.entries = s.gss.materialize(dst)
+		return s.entries
+	}
+	entries := make([]stackEntry, depth)
+	s.entries = s.gss.materialize(entries)
+	return s.entries
+}
+
+func (s *glrStack) push(state StateID, node *Node, entryScratch *glrEntryScratch, gssScratch *gssScratch) {
+	if s.gss.head != nil {
+		s.gss.push(state, node, gssScratch)
+	}
+	if s.entries != nil {
+		if entryScratch == nil {
+			s.entries = append(s.entries, stackEntry{state: state, node: node})
+		} else {
+			if len(s.entries) == cap(s.entries) {
+				s.entries = entryScratch.grow(s.entries, len(s.entries)+1)
+			}
+			idx := len(s.entries)
+			s.entries = s.entries[:idx+1]
+			s.entries[idx] = stackEntry{state: state, node: node}
 		}
-		return
+	} else if s.gss.head == nil {
+		s.entries = []stackEntry{{state: state, node: node}}
 	}
-	if len(s.entries) == cap(s.entries) {
-		s.entries = scratch.grow(s.entries, len(s.entries)+1)
-	}
-	idx := len(s.entries)
-	s.entries = s.entries[:idx+1]
-	s.entries[idx] = stackEntry{state: state, node: node}
 	if node != nil {
 		s.byteOffset = node.endByte
 	}
 }
 
-func (s *glrStack) recomputeByteOffset() {
+func (s *glrStack) truncate(depth int) bool {
+	if s.gss.head != nil {
+		if !s.gss.truncate(depth) {
+			return false
+		}
+		if s.entries != nil {
+			if depth <= len(s.entries) {
+				s.entries = s.entries[:depth]
+			} else {
+				s.entries = s.gss.materialize(s.entries[:0])
+			}
+		}
+		s.byteOffset = s.gss.byteOffset()
+		return true
+	}
+	if depth < 0 || depth > len(s.entries) {
+		return false
+	}
+	s.entries = s.entries[:depth]
 	s.byteOffset = stackByteOffset(s.entries)
+	return true
+}
+
+func (s *glrStack) recomputeByteOffset() {
+	if s.entries != nil {
+		s.byteOffset = stackByteOffset(s.entries)
+		return
+	}
+	if s.gss.head != nil {
+		s.byteOffset = s.gss.byteOffset()
+	}
 }
 
 // mergeStacks removes dead stacks and collapses only truly duplicate
@@ -146,10 +225,10 @@ func stackByteOffset(entries []stackEntry) uint32 {
 }
 
 func mergeKeyForStack(s glrStack) glrMergeKey {
-	if len(s.entries) == 0 {
+	if s.depth() == 0 {
 		return glrMergeKey{}
 	}
-	top := s.entries[len(s.entries)-1]
+	top := s.top()
 	return glrMergeKey{
 		state:      top.state,
 		byteOffset: s.byteOffset,
@@ -166,6 +245,36 @@ func stackEntriesEqual(a, b []stackEntry) bool {
 		}
 	}
 	return true
+}
+
+func gssStacksEqual(a, b gssStack) bool {
+	if a.head == b.head {
+		return true
+	}
+	if a.head == nil || b.head == nil {
+		return false
+	}
+	if a.head.depth != b.head.depth {
+		return false
+	}
+	for an, bn := a.head, b.head; an != nil && bn != nil; an, bn = an.prev, bn.prev {
+		if an.entry.state != bn.entry.state || !stackEntryNodesEquivalent(an.entry.node, bn.entry.node) {
+			return false
+		}
+	}
+	return true
+}
+
+func stackEquivalent(a, b glrStack) bool {
+	if a.depth() != b.depth() {
+		return false
+	}
+	if a.gss.head != nil && b.gss.head != nil {
+		return gssStacksEqual(a.gss, b.gss)
+	}
+	aa := a
+	bb := b
+	return stackEntriesEqual(aa.ensureEntries(nil), bb.ensureEntries(nil))
 }
 
 func stackEntryNodesEquivalent(a, b *Node) bool {
@@ -220,8 +329,8 @@ func isBetterStack(candidate, current glrStack) bool {
 	if candidate.score != current.score {
 		return candidate.score > current.score
 	}
-	if len(candidate.entries) != len(current.entries) {
-		return len(candidate.entries) > len(current.entries)
+	if candidate.depth() != current.depth() {
+		return candidate.depth() > current.depth()
 	}
 	if candidate.shifted != current.shifted {
 		return !candidate.shifted && current.shifted
@@ -265,7 +374,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			}
 			sameKeyCount++
 			existing := &result[j]
-			if len(existing.entries) != len(stack.entries) || !stackEntriesEqual(existing.entries, stack.entries) {
+			if !stackEquivalent(*existing, stack) {
 				if worstIndex == -1 || isBetterStack(result[worstIndex], *existing) {
 					worstIndex = j
 				}

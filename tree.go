@@ -1,5 +1,10 @@
 package gotreesitter
 
+import (
+	"sort"
+	"strings"
+)
+
 // Range is a span of source text.
 type Range struct {
 	StartByte  uint32
@@ -37,11 +42,21 @@ func (n *Node) ParseState() StateID { return n.parseState }
 // IsNamed reports whether this is a named node (as opposed to anonymous syntax like punctuation).
 func (n *Node) IsNamed() bool { return n.isNamed }
 
+// IsExtra reports whether this node was marked as extra syntax
+// (e.g. whitespace/comments outside the core parse structure).
+func (n *Node) IsExtra() bool { return n.isExtra }
+
 // IsMissing reports whether this node was inserted by error recovery.
 func (n *Node) IsMissing() bool { return n.isMissing }
 
+// IsError reports whether this node is an explicit error node.
+func (n *Node) IsError() bool { return n.symbol == errorSymbol }
+
 // HasError reports whether this node or any descendant contains a parse error.
 func (n *Node) HasError() bool { return n.hasError }
+
+// HasChanges reports whether this node was marked dirty by Tree.Edit.
+func (n *Node) HasChanges() bool { return n.dirty }
 
 // StartByte returns the byte offset where this node begins.
 func (n *Node) StartByte() uint32 { return n.startByte }
@@ -160,8 +175,47 @@ func (n *Node) ChildByFieldName(name string, lang *Language) *Node {
 	return nil
 }
 
+// FieldNameForChild returns the field name assigned to the i-th child,
+// or an empty string when no field is assigned.
+func (n *Node) FieldNameForChild(i int, lang *Language) string {
+	if n == nil || lang == nil || i < 0 || i >= len(n.children) || i >= len(n.fieldIDs) {
+		return ""
+	}
+	fid := n.fieldIDs[i]
+	if fid == 0 || int(fid) >= len(lang.FieldNames) {
+		return ""
+	}
+	return lang.FieldNames[fid]
+}
+
 // Children returns a slice of all children.
 func (n *Node) Children() []*Node { return n.children }
+
+// SExpr returns a tree-sitter-style S-expression for this node.
+// It includes only named nodes for stable debug snapshots.
+func (n *Node) SExpr(lang *Language) string {
+	if n == nil || lang == nil {
+		return ""
+	}
+	if !n.IsNamed() {
+		return ""
+	}
+	name := n.Type(lang)
+	if n.ChildCount() == 0 {
+		return "(" + name + ")"
+	}
+	parts := make([]string, 0, n.ChildCount())
+	for i := 0; i < n.ChildCount(); i++ {
+		s := n.Child(i).SExpr(lang)
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return "(" + name + ")"
+	}
+	return "(" + name + " " + strings.Join(parts, " ") + ")"
+}
 
 // Text returns the source text covered by this node.
 func (n *Node) Text(source []byte) string {
@@ -174,6 +228,92 @@ func (n *Node) Type(lang *Language) string {
 		return lang.SymbolNames[n.symbol]
 	}
 	return ""
+}
+
+func pointLessThan(a, b Point) bool {
+	if a.Row != b.Row {
+		return a.Row < b.Row
+	}
+	return a.Column < b.Column
+}
+
+func pointLessOrEqual(a, b Point) bool {
+	if a.Row != b.Row {
+		return a.Row < b.Row
+	}
+	return a.Column <= b.Column
+}
+
+func (n *Node) containsByteRange(startByte, endByte uint32) bool {
+	return startByte >= n.startByte && endByte <= n.endByte
+}
+
+func (n *Node) containsPointRange(startPoint, endPoint Point) bool {
+	return pointLessOrEqual(n.startPoint, startPoint) && pointLessOrEqual(endPoint, n.endPoint)
+}
+
+func (n *Node) descendantForByteRange(startByte, endByte uint32, namedOnly bool) *Node {
+	if n == nil || endByte < startByte || !n.containsByteRange(startByte, endByte) {
+		return nil
+	}
+
+	var deepest *Node
+	if !namedOnly || n.isNamed {
+		deepest = n
+	}
+	for _, child := range n.children {
+		if !child.containsByteRange(startByte, endByte) {
+			continue
+		}
+		if d := child.descendantForByteRange(startByte, endByte, namedOnly); d != nil {
+			deepest = d
+		}
+	}
+	return deepest
+}
+
+func (n *Node) descendantForPointRange(startPoint, endPoint Point, namedOnly bool) *Node {
+	if n == nil || pointLessThan(endPoint, startPoint) || !n.containsPointRange(startPoint, endPoint) {
+		return nil
+	}
+
+	var deepest *Node
+	if !namedOnly || n.isNamed {
+		deepest = n
+	}
+	for _, child := range n.children {
+		if !child.containsPointRange(startPoint, endPoint) {
+			continue
+		}
+		if d := child.descendantForPointRange(startPoint, endPoint, namedOnly); d != nil {
+			deepest = d
+		}
+	}
+	return deepest
+}
+
+// DescendantForByteRange returns the smallest descendant that fully contains
+// the given byte range, or nil when no such descendant exists.
+func (n *Node) DescendantForByteRange(startByte, endByte uint32) *Node {
+	return n.descendantForByteRange(startByte, endByte, false)
+}
+
+// NamedDescendantForByteRange returns the smallest named descendant that fully
+// contains the given byte range, or nil when no such descendant exists.
+func (n *Node) NamedDescendantForByteRange(startByte, endByte uint32) *Node {
+	return n.descendantForByteRange(startByte, endByte, true)
+}
+
+// DescendantForPointRange returns the smallest descendant that fully contains
+// the given point range, or nil when no such descendant exists.
+func (n *Node) DescendantForPointRange(startPoint, endPoint Point) *Node {
+	return n.descendantForPointRange(startPoint, endPoint, false)
+}
+
+// NamedDescendantForPointRange returns the smallest named descendant that
+// fully contains the given point range, or nil when no such descendant exists.
+func (n *Node) NamedDescendantForPointRange(startPoint, endPoint Point) *Node {
+	return n.descendantForPointRange(startPoint, endPoint, true)
 }
 
 // NewLeafNode creates a terminal/leaf node.
@@ -201,7 +341,30 @@ func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID,
 		productionID: productionID,
 	}
 
-	if len(children) > 0 {
+	switch len(children) {
+	case 0:
+		return n
+	case 1:
+		c0 := children[0]
+		n.startByte = c0.startByte
+		n.endByte = c0.endByte
+		n.startPoint = c0.startPoint
+		n.endPoint = c0.endPoint
+		c0.parent = n
+		n.hasError = c0.hasError
+		return n
+	case 2:
+		c0 := children[0]
+		c1 := children[1]
+		n.startByte = c0.startByte
+		n.endByte = c1.endByte
+		n.startPoint = c0.startPoint
+		n.endPoint = c1.endPoint
+		c0.parent = n
+		c1.parent = n
+		n.hasError = c0.hasError || c1.hasError
+		return n
+	default:
 		first := children[0]
 		last := children[len(children)-1]
 		n.startByte = first.startByte
@@ -254,7 +417,30 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 	n.productionID = productionID
 	n.ownerArena = arena
 
-	if len(children) > 0 {
+	switch len(children) {
+	case 0:
+		return n
+	case 1:
+		c0 := children[0]
+		n.startByte = c0.startByte
+		n.endByte = c0.endByte
+		n.startPoint = c0.startPoint
+		n.endPoint = c0.endPoint
+		c0.parent = n
+		n.hasError = c0.hasError
+		return n
+	case 2:
+		c0 := children[0]
+		c1 := children[1]
+		n.startByte = c0.startByte
+		n.endByte = c1.endByte
+		n.startPoint = c0.startPoint
+		n.endPoint = c1.endPoint
+		c0.parent = n
+		c1.parent = n
+		n.hasError = c0.hasError || c1.hasError
+		return n
+	default:
 		first := children[0]
 		last := children[len(children)-1]
 		n.startByte = first.startByte
@@ -391,6 +577,60 @@ func (t *Tree) Edit(edit InputEdit) {
 
 // Edits returns the pending edits recorded on this tree.
 func (t *Tree) Edits() []InputEdit { return t.edits }
+
+// ChangedRanges converts this tree's recorded edits into changed source ranges.
+// Overlapping ranges are coalesced.
+func (t *Tree) ChangedRanges() []Range {
+	if t == nil || len(t.edits) == 0 {
+		return nil
+	}
+	ranges := make([]Range, 0, len(t.edits))
+	for _, e := range t.edits {
+		ranges = append(ranges, Range{
+			StartByte:  e.StartByte,
+			EndByte:    e.NewEndByte,
+			StartPoint: e.StartPoint,
+			EndPoint:   e.NewEndPoint,
+		})
+	}
+	return coalesceRanges(ranges)
+}
+
+func rangesOverlapOrTouch(a, b Range) bool {
+	return !(a.EndByte < b.StartByte || b.EndByte < a.StartByte)
+}
+
+func coalesceRanges(in []Range) []Range {
+	if len(in) <= 1 {
+		return in
+	}
+	sort.Slice(in, func(i, j int) bool {
+		if in[i].StartByte != in[j].StartByte {
+			return in[i].StartByte < in[j].StartByte
+		}
+		return in[i].EndByte < in[j].EndByte
+	})
+	out := make([]Range, 0, len(in))
+	current := in[0]
+	for i := 1; i < len(in); i++ {
+		r := in[i]
+		if rangesOverlapOrTouch(current, r) {
+			if r.StartByte < current.StartByte {
+				current.StartByte = r.StartByte
+				current.StartPoint = r.StartPoint
+			}
+			if r.EndByte > current.EndByte {
+				current.EndByte = r.EndByte
+				current.EndPoint = r.EndPoint
+			}
+			continue
+		}
+		out = append(out, current)
+		current = r
+	}
+	out = append(out, current)
+	return out
+}
 
 // editNode recursively adjusts a node's byte/point spans for an edit and
 // marks nodes that overlap the edited region as dirty.

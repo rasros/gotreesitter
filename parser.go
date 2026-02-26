@@ -981,7 +981,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 		// Safety: if the primary stack has grown beyond the depth cap,
 		// or we've allocated too many nodes, return what we have.
-		if len(stacks[0].entries) > maxDepth || nodeCount > maxNodes {
+		if stacks[0].depth() > maxDepth || nodeCount > maxNodes {
 			return finalize(stacks)
 		}
 
@@ -1002,7 +1002,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// Incremental parsing fast-path: when there is a single active stack,
 		// try to reuse an unchanged subtree starting at the current token.
 		if reuse != nil && len(stacks) == 1 && !stacks[0].dead && tok.Symbol != 0 {
-			if nextTok, ok := p.tryReuseSubtree(&stacks[0], tok, ts, reuse, &scratch.entries); ok {
+			if nextTok, ok := p.tryReuseSubtree(&stacks[0], tok, ts, reuse, &scratch.entries, &scratch.gss); ok {
 				reusedAny = true
 				tok = nextTok
 				needToken = false
@@ -1038,7 +1038,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 					tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 				leaf.isExtra = true
 				leaf.parseState = currentState
-				s.push(currentState, leaf, &scratch.entries)
+				s.push(currentState, leaf, &scratch.entries, &scratch.gss)
 				nodeCount++
 				needToken = true
 				continue
@@ -1064,10 +1064,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 				// Try grammar-directed recovery by searching the stack for
 				// the nearest state that can recover on this lookahead.
-				if depth, recoverAct, ok := p.findRecoverActionOnStack(s, tok.Symbol); ok {
-					s.entries = s.entries[:depth+1]
-					s.recomputeByteOffset()
-					p.applyAction(s, recoverAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries)
+				if depth, recoverAct, ok := p.findRecoverActionOnStack(s, tok.Symbol, &scratch.entries); ok {
+					if !s.truncate(depth + 1) {
+						s.dead = true
+						continue
+					}
+					p.applyAction(s, recoverAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss)
 					needToken = true
 					continue
 				}
@@ -1079,14 +1081,14 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 
 				// Only stack: error recovery — wrap token in error node.
-				if len(s.entries) == 0 {
+				if s.depth() == 0 {
 					return finalize(stacks)
 				}
 				errNode := newLeafNodeInArena(arena, errorSymbol, false,
 					tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 				errNode.hasError = true
 				errNode.parseState = currentState
-				s.push(currentState, errNode, &scratch.entries)
+				s.push(currentState, errNode, &scratch.entries, &scratch.gss)
 				nodeCount++
 				needToken = true
 				continue
@@ -1100,23 +1102,23 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// very large inputs. At extreme depths, take the primary action
 				// to keep parsing bounded.
 				const maxForkCloneDepth = 4 * 1024
-				if len(s.entries) > maxForkCloneDepth {
-					p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries)
+				if s.depth() > maxForkCloneDepth {
+					p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss)
 					continue
 				}
 				// Copy the current stack value before appending forks.
 				// Appending can reallocate `stacks`, which would invalidate `s`.
 				base := *s
 				for ai := 1; ai < len(actions); ai++ {
-					fork := base.cloneWithScratch(&scratch.entries)
-					p.applyAction(&fork, actions[ai], tok, &anyReduced, &nodeCount, arena, &scratch.entries)
+					fork := base.cloneWithScratch(&scratch.gss)
+					p.applyAction(&fork, actions[ai], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss)
 					stacks = append(stacks, fork)
 				}
 				// Re-acquire the pointer after possible reallocation.
 				s = &stacks[si]
-				p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries)
+				p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss)
 			} else {
-				p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries)
+				p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss)
 			}
 		}
 
@@ -1183,7 +1185,7 @@ func (p *Parser) promotePrimaryStack(stacks []glrStack) {
 			best = i
 			continue
 		}
-		if stacks[i].score == stacks[best].score && len(stacks[i].entries) > len(stacks[best].entries) {
+		if stacks[i].score == stacks[best].score && stacks[i].depth() > stacks[best].depth() {
 			best = i
 		}
 	}
@@ -1205,8 +1207,8 @@ func stackPreferredForRetention(a, b glrStack) bool {
 	if a.score != b.score {
 		return a.score > b.score
 	}
-	if len(a.entries) != len(b.entries) {
-		return len(a.entries) > len(b.entries)
+	if a.depth() != b.depth() {
+		return a.depth() > b.depth()
 	}
 	if a.shifted != b.shifted {
 		return !a.shifted && b.shifted
@@ -1215,7 +1217,7 @@ func stackPreferredForRetention(a, b glrStack) bool {
 }
 
 // applyAction applies a single parse action to a GLR stack.
-func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch) {
+func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch) {
 	switch act.Type {
 	case ParseActionShift:
 		named := p.isNamedSymbol(tok.Symbol)
@@ -1223,22 +1225,23 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 			tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 		leaf.isExtra = act.Extra
 		leaf.parseState = act.State
-		s.push(act.State, leaf, entryScratch)
+		s.push(act.State, leaf, entryScratch, gssScratch)
 		s.shifted = true
 		*nodeCount++
 
 	case ParseActionReduce:
+		entries := s.ensureEntries(entryScratch)
 		childCount := int(act.ChildCount)
 
 		// Find the start position by scanning backwards, counting only
 		// non-extra entries toward childCount. In tree-sitter's C runtime
 		// (ts_stack_pop_count / stack__iter), extras on the stack are
 		// skipped when counting children for a reduce action.
-		start := len(s.entries)
+		start := len(entries)
 		nonExtraFound := 0
 		for nonExtraFound < childCount && start > 1 {
 			start--
-			if s.entries[start].node != nil && !s.entries[start].node.isExtra {
+			if entries[start].node != nil && !entries[start].node.isExtra {
 				nonExtraFound++
 			}
 		}
@@ -1249,18 +1252,16 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		}
 
 		// actualEntryCount includes extras interleaved between grammar symbols.
-		actualEntryCount := len(s.entries) - start
+		actualEntryCount := len(entries) - start
 		reducedEntryCount := actualEntryCount
-		trailingExtraCount := 0
 		for i := actualEntryCount - 1; i >= 0; i-- {
-			n := s.entries[start+i].node
+			n := entries[start+i].node
 			if n == nil || !n.isExtra {
 				break
 			}
-			trailingExtraCount++
 			reducedEntryCount--
 		}
-		topState := s.entries[start-1].state
+		topState := entries[start-1].state
 
 		lang := p.language
 		symbolMeta := lang.SymbolMetadata
@@ -1278,7 +1279,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		rawHasEnd := false
 		if reducedEntryCount > 0 {
 			for i := 0; i < reducedEntryCount; i++ {
-				n := s.entries[start+i].node
+				n := entries[start+i].node
 				if n != nil && !n.isExtra {
 					rawStartByte = n.startByte
 					rawStartPoint = n.startPoint
@@ -1287,7 +1288,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				}
 			}
 			for i := reducedEntryCount - 1; i >= 0; i-- {
-				n := s.entries[start+i].node
+				n := entries[start+i].node
 				if n != nil && !n.isExtra {
 					rawEndByte = n.endByte
 					rawEndPoint = n.endPoint
@@ -1295,8 +1296,8 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 					break
 				}
 			}
-			firstRaw := s.entries[start].node
-			lastRaw := s.entries[start+reducedEntryCount-1].node
+			firstRaw := entries[start].node
+			lastRaw := entries[start+reducedEntryCount-1].node
 			if !rawHasStart && firstRaw != nil {
 				rawStartByte = firstRaw.startByte
 				rawStartPoint = firstRaw.startPoint
@@ -1312,7 +1313,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		normalizedCount := 0
 		structuralChildIndex := 0
 		for i := 0; i < reducedEntryCount; i++ {
-			n := s.entries[start+i].node
+			n := entries[start+i].node
 			if n == nil {
 				continue
 			}
@@ -1346,7 +1347,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		out := 0
 		structuralChildIndex = 0
 		for i := 0; i < reducedEntryCount; i++ {
-			n := s.entries[start+i].node
+			n := entries[start+i].node
 			if n == nil {
 				continue
 			}
@@ -1393,13 +1394,15 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 			}
 		}
 
-		entriesBeforePop := s.entries
+		entriesBeforePop := entries
 		trailingStart := start + reducedEntryCount
 		trailingEnd := start + actualEntryCount
 
 		// Pop all reduced entries in one step after collection.
-		s.entries = s.entries[:start]
-		s.recomputeByteOffset()
+		if !s.truncate(start) {
+			s.dead = true
+			return
+		}
 
 		named := p.isNamedSymbol(act.Symbol)
 		parent := newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
@@ -1424,14 +1427,14 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 			targetState = gotoState
 		}
 		parent.parseState = targetState
-		s.push(targetState, parent, entryScratch)
+		s.push(targetState, parent, entryScratch, gssScratch)
 		for i := trailingStart; i < trailingEnd; i++ {
 			extra := entriesBeforePop[i].node
 			if extra == nil {
 				continue
 			}
 			extra.parseState = targetState
-			s.push(targetState, extra, entryScratch)
+			s.push(targetState, extra, entryScratch, gssScratch)
 		}
 
 		s.score += int(act.DynamicPrecedence)
@@ -1453,7 +1456,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 			recoverState = act.State
 		}
 		errNode.parseState = recoverState
-		s.push(recoverState, errNode, entryScratch)
+		s.push(recoverState, errNode, entryScratch, gssScratch)
 		*nodeCount++
 	}
 }
@@ -1470,12 +1473,16 @@ func recoverAction(entry *ParseActionEntry) (ParseAction, bool) {
 	return ParseAction{}, false
 }
 
-func (p *Parser) findRecoverActionOnStack(s *glrStack, sym Symbol) (int, ParseAction, bool) {
-	if s == nil || len(s.entries) == 0 {
+func (p *Parser) findRecoverActionOnStack(s *glrStack, sym Symbol, entryScratch *glrEntryScratch) (int, ParseAction, bool) {
+	if s == nil {
 		return 0, ParseAction{}, false
 	}
-	for depth := len(s.entries) - 1; depth >= 0; depth-- {
-		state := s.entries[depth].state
+	entries := s.ensureEntries(entryScratch)
+	if len(entries) == 0 {
+		return 0, ParseAction{}, false
+	}
+	for depth := len(entries) - 1; depth >= 0; depth-- {
+		state := entries[depth].state
 		action := p.lookupAction(state, sym)
 		if act, ok := recoverAction(action); ok {
 			return depth, act, true
@@ -1587,12 +1594,12 @@ func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nod
 			best = i
 			continue
 		}
-		if stacks[i].score == stacks[best].score && len(stacks[i].entries) > len(stacks[best].entries) {
+		if stacks[i].score == stacks[best].score && stacks[i].depth() > stacks[best].depth() {
 			best = i
 		}
 	}
 
-	return p.buildResult(stacks[best].entries, source, arena, oldTree, reusedAny)
+	return p.buildResult(stacks[best].ensureEntries(nil), source, arena, oldTree, reusedAny)
 }
 
 // lookupAction looks up the parse action for the given state and symbol.

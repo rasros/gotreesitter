@@ -516,10 +516,10 @@ func TestFindRecoverActionOnStackUsesNearestAncestor(t *testing.T) {
 	lang := buildArithmeticRecoverLanguage()
 	parser := NewParser(lang)
 	s := newGLRStack(lang.InitialState)
-	s.entries = append(s.entries, stackEntry{state: 2, node: nil})
-	s.entries = append(s.entries, stackEntry{state: 3, node: nil})
+	s.push(2, nil, nil, nil)
+	s.push(3, nil, nil, nil)
 
-	depth, act, ok := parser.findRecoverActionOnStack(&s, Symbol(3)) // STAR
+	depth, act, ok := parser.findRecoverActionOnStack(&s, Symbol(3), nil) // STAR
 	if !ok {
 		t.Fatal("expected recover action on stack for STAR")
 	}
@@ -601,6 +601,59 @@ func TestParserFieldMapFieldNames(t *testing.T) {
 	}
 	if fieldChild.Text(tree.Source()) != "42" {
 		t.Errorf("field child text = %q, want %q", fieldChild.Text(tree.Source()), "42")
+	}
+}
+
+func TestBuildResultFoldExtrasPreservesFieldMappings(t *testing.T) {
+	lang := buildArithmeticLanguage()
+	lang.FieldCount = 1
+	lang.FieldNames = []string{"", "value"}
+	parser := NewParser(lang)
+
+	source := []byte(" 42 ")
+
+	leadingExtra := NewLeafNode(2, false, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	leadingExtra.isExtra = true
+
+	valueChild := NewLeafNode(1, true, 1, 3, Point{Row: 0, Column: 1}, Point{Row: 0, Column: 3})
+	realRoot := NewParentNode(3, true, []*Node{valueChild}, []FieldID{1}, 0)
+
+	trailingExtra := NewLeafNode(2, false, 3, 4, Point{Row: 0, Column: 3}, Point{Row: 0, Column: 4})
+	trailingExtra.isExtra = true
+
+	stack := []stackEntry{
+		{state: 0, node: leadingExtra},
+		{state: 0, node: realRoot},
+		{state: 0, node: trailingExtra},
+	}
+
+	tree := parser.buildResult(stack, source, nil, nil, false)
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("buildResult returned nil tree/root")
+	}
+	root := tree.RootNode()
+	if root != realRoot {
+		t.Fatal("expected folded result to reuse real root node")
+	}
+	if root.ChildCount() != 3 {
+		t.Fatalf("root child count = %d, want 3", root.ChildCount())
+	}
+	if root.Child(0) != leadingExtra || root.Child(1) != valueChild || root.Child(2) != trailingExtra {
+		t.Fatalf("unexpected child order after folding extras")
+	}
+
+	fieldChild := root.ChildByFieldName("value", lang)
+	if fieldChild == nil {
+		t.Fatal("expected field-mapped child by name \"value\"")
+	}
+	if fieldChild != valueChild {
+		t.Fatal("field mapping shifted after folding extras")
+	}
+	if len(root.fieldIDs) != 3 || root.fieldIDs[1] != 1 {
+		t.Fatalf("fieldIDs not re-aligned after folding extras: %#v", root.fieldIDs)
+	}
+	if leadingExtra.Parent() != root || trailingExtra.Parent() != root {
+		t.Fatal("extra child parent pointers were not updated during fold")
 	}
 }
 

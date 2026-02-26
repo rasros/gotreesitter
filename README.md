@@ -99,9 +99,17 @@ c.GotoChildByFieldName("body")  // jump to "body" field
 for ok := c.GotoFirstNamedChild(); ok; ok = c.GotoNextNamedSibling() {
     fmt.Printf("%s at %d\n", c.CurrentNodeType(), c.CurrentNode().StartByte())
 }
+
+// Position-based navigation returns child index, or -1 if not found.
+idx := c.GotoFirstChildForByte(128)
+if idx >= 0 {
+    fmt.Printf("moved to child index %d\n", idx)
+}
 ```
 
 Navigation methods: `GotoFirstChild`, `GotoLastChild`, `GotoNextSibling`, `GotoPrevSibling`, `GotoParent`, plus named-only variants (`GotoFirstNamedChild`, etc.), field-based (`GotoChildByFieldName`, `GotoChildByFieldID`), and position-based (`GotoFirstChildForByte`, `GotoFirstChildForPoint`).
+
+Cursor lifetime: recreate cursors after `Tree.Release()`, `Tree.Edit(...)`, or incremental reparse. Cursors hold node pointers from a specific tree snapshot.
 
 ### Highlighting
 
@@ -180,6 +188,20 @@ go test . -run '^$' -tags treesitter_c_bench -bench 'BenchmarkCTreeSitterGoParse
 | `GoParseIncrementalNoEdit` | 8.63 | 0 | 0 |
 
 </details>
+
+### Benchmark matrix runner
+
+For repeatable perf tracking (editor path, indexing path, stress path):
+
+```sh
+go run ./cmd/benchmatrix --count 10
+```
+
+This emits:
+
+- `bench_out/matrix.json` (machine-readable metrics)
+- `bench_out/matrix.md` (human summary)
+- raw benchmark logs under `bench_out/raw/`
 
 ## Supported languages
 
