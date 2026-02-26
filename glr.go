@@ -28,7 +28,7 @@ const (
 	defaultStackEntrySlabCap = 4 * 1024
 	// Retain enough entry-scratch capacity to avoid re-allocating large
 	// GLR stacks on every parse pass.
-	maxRetainedStackEntryCap = 64 * 1024 * 1024
+	maxRetainedStackEntryCap = 8 * 1024 * 1024
 	// Tree-sitter's C runtime caps links per stack node at 8.
 	// We cap distinct alternatives per merge key similarly to avoid
 	// unbounded stack growth while preserving multiple paths.
@@ -38,7 +38,6 @@ const (
 type glrMergeScratch struct {
 	result []glrStack
 	keys   []glrMergeKey
-	alive  []glrStack
 }
 
 type glrMergeKey struct {
@@ -54,6 +53,18 @@ type glrEntryScratch struct {
 type stackEntrySlab struct {
 	data []stackEntry
 	used int
+}
+
+func (s *glrEntryScratch) ensureInitialCap(minEntries int) {
+	if minEntries <= 0 || len(s.slabs) != 0 {
+		return
+	}
+	capacity := defaultStackEntrySlabCap
+	if minEntries > capacity {
+		capacity = minEntries
+	}
+	s.slabs = append(s.slabs, stackEntrySlab{data: make([]stackEntry, capacity)})
+	s.slabCursor = 0
 }
 
 func newGLRStack(initial StateID) glrStack {
@@ -237,16 +248,13 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 		local := glrMergeScratch{}
 		scratch = &local
 	}
-	aliveSnapshot := ensureMergeAliveCap(scratch, len(alive))
-	copy(aliveSnapshot, alive)
-
 	// Merge exact duplicates and keep a bounded number of distinct
 	// alternatives per merge key. This approximates the C runtime's
 	// graph-stack link fanout while keeping memory bounded.
-	result := ensureMergeResultCap(scratch, len(aliveSnapshot))
-	keys := ensureMergeKeyCap(scratch, len(aliveSnapshot))
-	for i := range aliveSnapshot {
-		stack := aliveSnapshot[i]
+	result := ensureMergeResultCap(scratch, len(alive))
+	keys := ensureMergeKeyCap(scratch, len(alive))
+	for i := range alive {
+		stack := alive[i]
 		key := mergeKeyForStack(stack)
 		duplicateIndex := -1
 		sameKeyCount := 0
@@ -256,8 +264,9 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 				continue
 			}
 			sameKeyCount++
-			if !stackEntriesEqual(result[j].entries, stack.entries) {
-				if worstIndex == -1 || isBetterStack(result[worstIndex], result[j]) {
+			existing := &result[j]
+			if len(existing.entries) != len(stack.entries) || !stackEntriesEqual(existing.entries, stack.entries) {
+				if worstIndex == -1 || isBetterStack(result[worstIndex], *existing) {
 					worstIndex = j
 				}
 				continue
@@ -301,14 +310,6 @@ func ensureMergeKeyCap(scratch *glrMergeScratch, n int) []glrMergeKey {
 		scratch.keys = make([]glrMergeKey, 0, n)
 	}
 	return scratch.keys[:0]
-}
-
-func ensureMergeAliveCap(scratch *glrMergeScratch, n int) []glrStack {
-	if cap(scratch.alive) < n {
-		scratch.alive = make([]glrStack, n)
-		return scratch.alive
-	}
-	return scratch.alive[:n]
 }
 
 func (s *glrEntryScratch) alloc(n int) []stackEntry {

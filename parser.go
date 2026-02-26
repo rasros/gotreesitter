@@ -65,12 +65,8 @@ func releaseParserScratch(s *parserScratch) {
 	if len(s.merge.keys) > 0 {
 		clear(s.merge.keys)
 	}
-	if len(s.merge.alive) > 0 {
-		clear(s.merge.alive)
-	}
 	s.merge.result = s.merge.result[:0]
 	s.merge.keys = s.merge.keys[:0]
-	s.merge.alive = s.merge.alive[:0]
 	s.entries.reset()
 	parserScratchMu.Lock()
 	if len(parserScratchPool) < maxParserScratchPoolSize {
@@ -812,15 +808,31 @@ func parseFullArenaNodeCapacity(sourceLen int) int {
 	if sourceLen <= 0 {
 		return base
 	}
-	// Full parses can build substantially more nodes than source bytes,
-	// especially under GLR ambiguity. Pre-size close to the parser's
-	// node safety limit to avoid repeated heap fallback allocations.
-	const maxPreallocNodes = 1_000_000
+	// Pre-size near the parse safety ceiling to avoid expensive heap
+	// fallback node allocations on larger files.
 	estimate := parseNodeLimit(sourceLen)
+	const maxPreallocNodes = 2_000_000
 	if estimate > maxPreallocNodes {
 		estimate = maxPreallocNodes
 	}
 	return max(base, estimate)
+}
+
+func parseFullEntryScratchCapacity(sourceLen int) int {
+	if sourceLen <= 0 {
+		return defaultStackEntrySlabCap
+	}
+	estimate := sourceLen * 8
+	if estimate < defaultStackEntrySlabCap {
+		estimate = defaultStackEntrySlabCap
+	}
+	// Keep initial scratch growth bounded; larger capacities are still
+	// reached on demand and retained up to maxRetainedStackEntryCap.
+	const maxPreallocEntries = 256 * 1024
+	if estimate > maxPreallocEntries {
+		estimate = maxPreallocEntries
+	}
+	return estimate
 }
 
 func parseErrorTree(source []byte, lang *Language) *Tree {
@@ -912,6 +924,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	arena := acquireNodeArena(arenaClass)
 	if arenaClass == arenaClassFull {
 		arena.ensureNodeCapacity(parseFullArenaNodeCapacity(len(source)))
+		scratch.entries.ensureInitialCap(parseFullEntryScratchCapacity(len(source)))
 	}
 	reusedAny := false
 
@@ -948,7 +961,6 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				return parseErrorTree(source, p.language)
 			}
 		}
-
 		// Cap the number of parallel stacks to prevent combinatorial explosion.
 		// Keep the most promising stacks instead of truncating by insertion
 		// order, which can discard viable parses on highly-ambiguous inputs.
@@ -1082,6 +1094,14 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			// For single-action entries (the common case), no fork occurs.
 			// For multi-action entries, clone the stack for each alternative.
 			if len(actions) > 1 {
+				// Deep-stack GLR forks can trigger pathological clone volumes on
+				// very large inputs. At extreme depths, take the primary action
+				// to keep parsing bounded.
+				const maxForkCloneDepth = 4 * 1024
+				if len(s.entries) > maxForkCloneDepth {
+					p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries)
+					continue
+				}
 				// Copy the current stack value before appending forks.
 				// Appending can reallocate `stacks`, which would invalidate `s`.
 				base := *s
@@ -1377,6 +1397,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 
 		// Pop all reduced entries in one step after collection.
 		s.entries = s.entries[:start]
+		s.recomputeByteOffset()
 
 		named := p.isNamedSymbol(act.Symbol)
 		parent := newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
