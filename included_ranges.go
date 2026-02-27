@@ -65,6 +65,12 @@ func (s *includedRangeTokenSource) SetParserState(state StateID) {
 	}
 }
 
+func (s *includedRangeTokenSource) SetGLRStates(states []StateID) {
+	if p, ok := s.base.(parserStateTokenSource); ok {
+		p.SetGLRStates(states)
+	}
+}
+
 func (s *includedRangeTokenSource) Next() Token {
 	return s.filterToken(Token{}, false)
 }

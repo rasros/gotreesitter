@@ -621,6 +621,10 @@ type PointSkippableTokenSource interface {
 
 type parserStateTokenSource interface {
 	SetParserState(state StateID)
+	// SetGLRStates provides all active GLR stack states so the token source
+	// can compute valid external symbols as the union across all stacks.
+	// This is critical for grammars with external scanners and GLR conflicts.
+	SetGLRStates(states []StateID)
 }
 
 // stackEntry is a single entry on the parser's LR stack, pairing a parser
@@ -839,6 +843,7 @@ type dfaTokenSource struct {
 	hasKeywordState   []bool
 	externalPayload   any
 	externalValid     []bool
+	glrStates         []StateID // all active GLR stack states
 }
 
 func (d *dfaTokenSource) Close() {
@@ -902,6 +907,10 @@ func (d *dfaTokenSource) SetParserState(state StateID) {
 	d.state = state
 }
 
+func (d *dfaTokenSource) SetGLRStates(states []StateID) {
+	d.glrStates = states
+}
+
 func (d *dfaTokenSource) SkipToByte(offset uint32) Token {
 	target := int(offset)
 	if target < d.lexer.pos {
@@ -954,11 +963,22 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 		valid[i] = false
 	}
 
+	// Compute valid external symbols as the union across all active GLR
+	// stacks. Different stacks may be in different parser states with
+	// different valid external tokens. The scanner needs to see the union
+	// so it can produce tokens that any stack might need. Stacks that
+	// can't use the resulting token will be pruned by the action phase.
 	anyValid := false
-	for i, sym := range d.language.ExternalSymbols {
-		if d.lookupActionIndex(d.state, sym) != 0 {
-			valid[i] = true
-			anyValid = true
+	states := d.glrStates
+	if len(states) == 0 {
+		states = []StateID{d.state}
+	}
+	for _, st := range states {
+		for i, sym := range d.language.ExternalSymbols {
+			if !valid[i] && d.lookupActionIndex(st, sym) != 0 {
+				valid[i] = true
+				anyValid = true
+			}
 		}
 	}
 	if !anyValid {
@@ -1684,8 +1704,21 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		}
 
 		// Use the primary (first) stack's state for DFA lex mode selection.
+		// Pass all active GLR stack states so external scanner valid symbols
+		// are computed as the union across all stacks.
 		if stateful, ok := ts.(parserStateTokenSource); ok {
 			stateful.SetParserState(stacks[0].top().state)
+			if len(stacks) > 1 {
+				glrBuf := make([]StateID, 0, len(stacks))
+				for si := range stacks {
+					if !stacks[si].dead {
+						glrBuf = append(glrBuf, stacks[si].top().state)
+					}
+				}
+				stateful.SetGLRStates(glrBuf)
+			} else {
+				stateful.SetGLRStates(nil)
+			}
 		}
 
 		if needToken {

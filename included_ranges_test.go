@@ -34,6 +34,10 @@ func (s *stubTokenSource) SetParserState(state StateID) {
 	s.state = state
 }
 
+func (s *stubTokenSource) SetGLRStates(states []StateID) {
+	// stub: no-op
+}
+
 func TestNormalizeIncludedRanges(t *testing.T) {
 	in := []Range{
 		{StartByte: 20, EndByte: 30},
