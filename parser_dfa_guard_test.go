@@ -73,3 +73,41 @@ func TestParseWithNilLanguageReturnsError(t *testing.T) {
 		t.Errorf("expected ErrNoLanguage, got: %v", err)
 	}
 }
+
+func TestParseIncrementalWithNilLanguageReturnsError(t *testing.T) {
+	parser := &Parser{}
+	oldTree := NewTree(nil, []byte("old"), nil)
+
+	_, err := parser.ParseIncremental([]byte("new"), oldTree)
+	if err == nil {
+		t.Fatal("expected error for nil language")
+	}
+	if err != ErrNoLanguage {
+		t.Errorf("expected ErrNoLanguage, got: %v", err)
+	}
+}
+
+func TestParseWithTokenSourceNilLanguageReturnsError(t *testing.T) {
+	parser := &Parser{}
+
+	_, err := parser.ParseWithTokenSource([]byte("anything"), nil)
+	if err == nil {
+		t.Fatal("expected error for nil language")
+	}
+	if err != ErrNoLanguage {
+		t.Errorf("expected ErrNoLanguage, got: %v", err)
+	}
+}
+
+func TestParseIncrementalWithTokenSourceNilLanguageReturnsError(t *testing.T) {
+	parser := &Parser{}
+	oldTree := NewTree(nil, []byte("old"), nil)
+
+	_, err := parser.ParseIncrementalWithTokenSource([]byte("new"), oldTree, nil)
+	if err == nil {
+		t.Fatal("expected error for nil language")
+	}
+	if err != ErrNoLanguage {
+		t.Errorf("expected ErrNoLanguage, got: %v", err)
+	}
+}

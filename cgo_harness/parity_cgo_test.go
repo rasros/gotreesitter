@@ -13,6 +13,7 @@ package cgoharness
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -27,10 +28,8 @@ type parityMeta struct {
 }
 
 var paritySkips = map[string]parityMeta{
-	// Structural parity requires a Go implementation of the language's external
-	// scanner. Keep these skipped until scanners are ported.
-	"swift": {skipReason: "C reference parser language ABI version is 10 (reference binding expects 13-15)"},
-	"yaml":  {skipReason: "external scanner not ported"},
+	// Keep this map for explicitly known structural mismatches.
+	// Parse-support-specific skips (e.g. missing scanners) should not live here.
 }
 
 type parityCase struct {
@@ -74,6 +73,16 @@ var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangE
 		support[report.Name] = report
 	}
 	return entries, support
+}()
+
+var parityCompareFields = func() bool {
+	raw := strings.TrimSpace(os.Getenv("GTS_PARITY_COMPARE_FIELDS"))
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }()
 
 type nodeSnapshot struct {
@@ -135,6 +144,13 @@ func compareNodes(goNode *gotreesitter.Node, goLang *gotreesitter.Language, cNod
 
 	for i := 0; i < gs.ChildCount; i++ {
 		childPath := fmt.Sprintf("%s[%d]", path, i)
+		if parityCompareFields {
+			goField := goNode.FieldNameForChild(i, goLang)
+			cField := cNode.FieldNameForChild(uint32(i))
+			if goField != cField {
+				*errs = append(*errs, fmt.Sprintf("%s: FieldName go=%q c=%q", childPath, goField, cField))
+			}
+		}
 		compareNodes(goNode.Child(i), goLang, cNode.Child(uint(i)), childPath, errs)
 	}
 }
@@ -173,6 +189,13 @@ func compareGoNodes(left *gotreesitter.Node, lang *gotreesitter.Language, right 
 
 	for i := 0; i < ls.ChildCount; i++ {
 		childPath := fmt.Sprintf("%s[%d]", path, i)
+		if parityCompareFields {
+			leftField := left.FieldNameForChild(i, lang)
+			rightField := right.FieldNameForChild(i, lang)
+			if leftField != rightField {
+				*errs = append(*errs, fmt.Sprintf("%s: FieldName left=%q right=%q", childPath, leftField, rightField))
+			}
+		}
 		compareGoNodes(left.Child(i), lang, right.Child(i), childPath, errs)
 	}
 }
@@ -191,15 +214,16 @@ func parseWithGo(tc parityCase, src []byte, oldTree *gotreesitter.Tree) (*gotree
 	parser := gotreesitter.NewParser(lang)
 
 	var tree *gotreesitter.Tree
+	var parseErr error
 	if oldTree == nil {
 		switch report.Backend {
 		case grammars.ParseBackendTokenSource:
 			if entry.TokenSourceFactory == nil {
 				return nil, nil, fmt.Errorf("token source backend without factory for %q", tc.name)
 			}
-			tree, _ = parser.ParseWithTokenSource(src, entry.TokenSourceFactory(src, lang))
+			tree, parseErr = parser.ParseWithTokenSource(src, entry.TokenSourceFactory(src, lang))
 		case grammars.ParseBackendDFA, grammars.ParseBackendDFAPartial:
-			tree, _ = parser.Parse(src)
+			tree, parseErr = parser.Parse(src)
 		default:
 			return nil, nil, fmt.Errorf("unsupported parse backend %q for %q", report.Backend, tc.name)
 		}
@@ -209,12 +233,15 @@ func parseWithGo(tc parityCase, src []byte, oldTree *gotreesitter.Tree) (*gotree
 			if entry.TokenSourceFactory == nil {
 				return nil, nil, fmt.Errorf("token source backend without factory for %q", tc.name)
 			}
-			tree, _ = parser.ParseIncrementalWithTokenSource(src, oldTree, entry.TokenSourceFactory(src, lang))
+			tree, parseErr = parser.ParseIncrementalWithTokenSource(src, oldTree, entry.TokenSourceFactory(src, lang))
 		case grammars.ParseBackendDFA, grammars.ParseBackendDFAPartial:
-			tree, _ = parser.ParseIncremental(src, oldTree)
+			tree, parseErr = parser.ParseIncremental(src, oldTree)
 		default:
 			return nil, nil, fmt.Errorf("unsupported incremental backend %q for %q", report.Backend, tc.name)
 		}
+	}
+	if parseErr != nil {
+		return nil, nil, fmt.Errorf("gotreesitter parse error: %w", parseErr)
 	}
 
 	if tree == nil || tree.RootNode() == nil {
@@ -232,12 +259,18 @@ func runParityCase(t *testing.T, tc parityCase, label string, src []byte) {
 	}
 	cLang, err := ParityCLanguage(tc.name)
 	if err != nil {
+		if skipReason := parityReferenceSkipReason(err); skipReason != "" {
+			t.Skipf("[%s/%s] skip C reference parser: %s", tc.name, label, skipReason)
+		}
 		t.Fatalf("[%s/%s] load C parser from languages.lock: %v", tc.name, label, err)
 	}
 
 	cParser := sitter.NewParser()
 	defer cParser.Close()
 	if err := cParser.SetLanguage(cLang); err != nil {
+		if skipReason := parityReferenceSkipReason(err); skipReason != "" {
+			t.Skipf("[%s/%s] skip C reference parser SetLanguage: %s", tc.name, label, skipReason)
+		}
 		t.Fatalf("[%s/%s] C parser SetLanguage error: %v", tc.name, label, err)
 	}
 	cTree := cParser.Parse(src, nil)
@@ -266,7 +299,21 @@ func runParityCase(t *testing.T, tc parityCase, label string, src []byte) {
 	t.Errorf("[%s/%s] %d node divergence(s):\n  %s", tc.name, label, len(errs), msg)
 }
 
-func normalizedSource(src string) []byte {
+func parityReferenceSkipReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "ABI version") || strings.Contains(msg, "Incompatible language version") {
+		return msg
+	}
+	return ""
+}
+
+func normalizedSource(name, src string) []byte {
+	if name == "yaml" || name == "swift" {
+		return []byte(src)
+	}
 	// Trim one trailing newline so both runtimes compare syntax tree shape
 	// independent of final-line extra-token representation.
 	return []byte(strings.TrimSuffix(src, "\n"))
@@ -397,7 +444,7 @@ func TestParityFreshParse(t *testing.T) {
 			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {
 				t.Skipf("known mismatch: %s", meta.skipReason)
 			}
-			runParityCase(t, tc, "fresh", normalizedSource(tc.source))
+			runParityCase(t, tc, "fresh", normalizedSource(tc.name, tc.source))
 		})
 	}
 }
@@ -412,7 +459,7 @@ func TestParityIncrementalParse(t *testing.T) {
 				t.Skipf("known mismatch: %s", meta.skipReason)
 			}
 
-			src := normalizedSource(tc.source)
+			src := normalizedSource(tc.name, tc.source)
 			if len(src) < 2 {
 				t.Skip("source too short for incremental edit")
 			}
@@ -423,12 +470,18 @@ func TestParityIncrementalParse(t *testing.T) {
 			}
 			cLang, err := ParityCLanguage(tc.name)
 			if err != nil {
+				if skipReason := parityReferenceSkipReason(err); skipReason != "" {
+					t.Skipf("[%s/incremental] skip C reference parser: %s", tc.name, skipReason)
+				}
 				t.Fatalf("[%s/incremental] load C parser from languages.lock: %v", tc.name, err)
 			}
 
 			cParser := sitter.NewParser()
 			defer cParser.Close()
 			if err := cParser.SetLanguage(cLang); err != nil {
+				if skipReason := parityReferenceSkipReason(err); skipReason != "" {
+					t.Skipf("[%s/incremental] skip C parser SetLanguage: %s", tc.name, skipReason)
+				}
 				t.Fatalf("[%s/incremental] C parser SetLanguage error: %v", tc.name, err)
 			}
 
@@ -564,8 +617,23 @@ func TestParityHasNoErrors(t *testing.T) {
 			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {
 				t.Skipf("known mismatch: %s", meta.skipReason)
 			}
+			cLang, err := ParityCLanguage(tc.name)
+			if err != nil {
+				if skipReason := parityReferenceSkipReason(err); skipReason != "" {
+					t.Skipf("[%s/errors] skip C reference parser: %s", tc.name, skipReason)
+				}
+				t.Fatalf("[%s/errors] load C parser from languages.lock: %v", tc.name, err)
+			}
+			cParser := sitter.NewParser()
+			defer cParser.Close()
+			if err := cParser.SetLanguage(cLang); err != nil {
+				if skipReason := parityReferenceSkipReason(err); skipReason != "" {
+					t.Skipf("[%s/errors] skip C parser SetLanguage: %s", tc.name, skipReason)
+				}
+				t.Fatalf("[%s/errors] C parser SetLanguage error: %v", tc.name, err)
+			}
 
-			tree, _, err := parseWithGo(tc, normalizedSource(tc.source), nil)
+			tree, _, err := parseWithGo(tc, normalizedSource(tc.name, tc.source), nil)
 			if err != nil {
 				t.Fatalf("[%s/errors] gotreesitter parse error: %v", tc.name, err)
 			}

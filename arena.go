@@ -21,6 +21,17 @@ const (
 	fullChildSliceCap        = 32 * 1024
 	incrementalFieldSliceCap = 2 * 1024
 	fullFieldSliceCap        = 32 * 1024
+
+	maxRetainedArenaFactor = 4
+	// Full-parse node slabs are much larger; keep more headroom so capacity
+	// growth does not thrash between parses.
+	maxRetainedFullNodeArenaFactor = 16
+
+	// Absolute node-cap retention ceilings to avoid repeated large reallocation
+	// on warm edit/full-parse workloads.
+	maxRetainedIncrementalNodeCap = 1 * 1024 * 1024
+	maxRetainedFullNodeCap        = 2 * 1024 * 1024
+
 )
 
 type arenaClass uint8
@@ -39,10 +50,18 @@ type nodeArena struct {
 	used  int
 	refs  atomic.Int32
 
+	nodeSlabs      []nodeSlab
+	nodeSlabCursor int
+
 	childSlabs      []childSliceSlab
 	fieldSlabs      []fieldSliceSlab
 	childSlabCursor int
 	fieldSlabCursor int
+}
+
+type nodeSlab struct {
+	data []Node
+	used int
 }
 
 type childSliceSlab struct {
@@ -56,17 +75,101 @@ type fieldSliceSlab struct {
 }
 
 var (
-	incrementalArenaPool = sync.Pool{
-		New: func() any {
-			return newNodeArena(arenaClassIncremental, incrementalArenaSlab)
-		},
+	incrementalArenaPool = nodeArenaPool{
+		class:     arenaClassIncremental,
+		slabBytes: incrementalArenaSlab,
+		maxSize:   8,
 	}
-	fullArenaPool = sync.Pool{
-		New: func() any {
-			return newNodeArena(arenaClassFull, fullParseArenaSlab)
-		},
+	fullArenaPool = nodeArenaPool{
+		class:     arenaClassFull,
+		slabBytes: fullParseArenaSlab,
+		maxSize:   4,
 	}
 )
+
+type nodeArenaPool struct {
+	mu        sync.Mutex
+	class     arenaClass
+	slabBytes int
+	maxSize   int
+	free      []*nodeArena
+}
+
+type ArenaProfile struct {
+	IncrementalAcquire uint64
+	IncrementalNew     uint64
+	FullAcquire        uint64
+	FullNew            uint64
+}
+
+var (
+	arenaProfileEnabled bool
+	arenaProfileData    ArenaProfile
+)
+
+// EnableArenaProfile toggles arena pool counters.
+// This debug hook is not concurrency-safe and is intended for single-threaded
+// benchmark/profiling runs.
+func EnableArenaProfile(enabled bool) {
+	arenaProfileEnabled = enabled
+}
+
+// ResetArenaProfile resets arena pool counters.
+// This debug hook is not concurrency-safe and is intended for single-threaded
+// benchmark/profiling runs.
+func ResetArenaProfile() {
+	arenaProfileData = ArenaProfile{}
+}
+
+// ArenaProfileSnapshot returns current arena pool counters.
+// This debug hook is not concurrency-safe and is intended for single-threaded
+// benchmark/profiling runs.
+func ArenaProfileSnapshot() ArenaProfile {
+	return arenaProfileData
+}
+
+func (p *nodeArenaPool) acquire() *nodeArena {
+	p.mu.Lock()
+	n := len(p.free)
+	if n == 0 {
+		p.mu.Unlock()
+		a := newNodeArena(p.class, p.slabBytes)
+		if arenaProfileEnabled {
+			switch p.class {
+			case arenaClassIncremental:
+				arenaProfileData.IncrementalAcquire++
+				arenaProfileData.IncrementalNew++
+			default:
+				arenaProfileData.FullAcquire++
+				arenaProfileData.FullNew++
+			}
+		}
+		return a
+	}
+	a := p.free[n-1]
+	p.free = p.free[:n-1]
+	p.mu.Unlock()
+	if arenaProfileEnabled {
+		switch p.class {
+		case arenaClassIncremental:
+			arenaProfileData.IncrementalAcquire++
+		default:
+			arenaProfileData.FullAcquire++
+		}
+	}
+	return a
+}
+
+func (p *nodeArenaPool) release(a *nodeArena) {
+	if a == nil {
+		return
+	}
+	p.mu.Lock()
+	if len(p.free) < p.maxSize {
+		p.free = append(p.free, a)
+	}
+	p.mu.Unlock()
+}
 
 func nodeCapacityForBytes(slabBytes int) int {
 	nodeSize := int(unsafe.Sizeof(Node{}))
@@ -89,7 +192,7 @@ func newNodeArena(class arenaClass, slabBytes int) *nodeArena {
 	}
 	return &nodeArena{
 		class:      class,
-		nodes:      make([]Node, nodeCapacityForBytes(slabBytes)),
+		nodes:      make([]Node, nodeCapacityForClass(class)),
 		childSlabs: []childSliceSlab{{data: make([]*Node, childCap)}},
 		fieldSlabs: []fieldSliceSlab{{data: make([]FieldID, fieldCap)}},
 	}
@@ -99,9 +202,9 @@ func acquireNodeArena(class arenaClass) *nodeArena {
 	var a *nodeArena
 	switch class {
 	case arenaClassIncremental:
-		a = incrementalArenaPool.Get().(*nodeArena)
+		a = incrementalArenaPool.acquire()
 	default:
-		a = fullArenaPool.Get().(*nodeArena)
+		a = fullArenaPool.acquire()
 	}
 	a.refs.Store(1)
 	return a
@@ -124,23 +227,49 @@ func (a *nodeArena) Release() {
 	a.reset()
 	switch a.class {
 	case arenaClassIncremental:
-		incrementalArenaPool.Put(a)
+		incrementalArenaPool.release(a)
 	default:
-		fullArenaPool.Put(a)
+		fullArenaPool.release(a)
 	}
 }
 
 func (a *nodeArena) reset() {
-	for i := 0; i < a.used; i++ {
-		a.nodes[i] = Node{}
+	primaryUsed := a.used
+	if primaryUsed > len(a.nodes) {
+		primaryUsed = len(a.nodes)
 	}
+	clear(a.nodes[:primaryUsed])
 	a.used = 0
+	for i := range a.nodeSlabs {
+		slab := &a.nodeSlabs[i]
+		clear(slab.data[:slab.used])
+		slab.used = 0
+	}
+	if len(a.nodeSlabs) > 0 {
+		retained := 0
+		keep := 0
+		limit := maxRetainedOverflowNodeCapacityForClass(a.class)
+		for i := 0; i < len(a.nodeSlabs); i++ {
+			capacity := len(a.nodeSlabs[i].data)
+			if capacity <= 0 {
+				break
+			}
+			if retained+capacity > limit {
+				break
+			}
+			retained += capacity
+			keep = i + 1
+		}
+		for i := keep; i < len(a.nodeSlabs); i++ {
+			a.nodeSlabs[i] = nodeSlab{}
+		}
+		a.nodeSlabs = a.nodeSlabs[:keep]
+	}
+	a.nodeSlabCursor = 0
 
 	for i := range a.childSlabs {
 		slab := &a.childSlabs[i]
-		for j := 0; j < slab.used; j++ {
-			slab.data[j] = nil
-		}
+		clear(slab.data[:slab.used])
 		slab.used = 0
 	}
 	for i := range a.fieldSlabs {
@@ -148,20 +277,86 @@ func (a *nodeArena) reset() {
 	}
 	a.childSlabCursor = 0
 	a.fieldSlabCursor = 0
+
+	if len(a.nodes) > maxRetainedNodeCapacityForClass(a.class) {
+		a.nodes = make([]Node, nodeCapacityForClass(a.class))
+	}
+	if len(a.childSlabs) == 0 {
+		a.childSlabs = []childSliceSlab{{data: make([]*Node, defaultChildSliceCap(a.class))}}
+	}
+	if len(a.fieldSlabs) == 0 {
+		a.fieldSlabs = []fieldSliceSlab{{data: make([]FieldID, defaultFieldSliceCap(a.class))}}
+	}
 }
 
 func (a *nodeArena) allocNode() *Node {
 	if a == nil {
 		return &Node{}
 	}
+	return a.allocNodeFast()
+}
+
+func (a *nodeArena) allocNodeFast() *Node {
 	if a.used < len(a.nodes) {
 		n := &a.nodes[a.used]
 		a.used++
-		*n = Node{}
 		return n
 	}
-	// Fallback when slab is exhausted.
-	return &Node{}
+	return a.allocNodeSlow()
+}
+
+func (a *nodeArena) allocNodeSlow() *Node {
+	if len(a.nodeSlabs) == 0 {
+		capacity := nodeCapacityForClass(a.class)
+		if capacity < minArenaNodeCap {
+			capacity = minArenaNodeCap
+		}
+		a.nodeSlabs = append(a.nodeSlabs, nodeSlab{data: make([]Node, capacity)})
+		a.nodeSlabCursor = 0
+	}
+	if a.nodeSlabCursor < 0 || a.nodeSlabCursor >= len(a.nodeSlabs) {
+		a.nodeSlabCursor = 0
+	}
+	for i := a.nodeSlabCursor; ; i++ {
+		if i >= len(a.nodeSlabs) {
+			lastCap := len(a.nodeSlabs[len(a.nodeSlabs)-1].data)
+			capacity := lastCap * 2
+			if capacity < minArenaNodeCap {
+				capacity = minArenaNodeCap
+			}
+			a.nodeSlabs = append(a.nodeSlabs, nodeSlab{data: make([]Node, capacity)})
+		}
+
+		slab := &a.nodeSlabs[i]
+		if slab.used >= len(slab.data) {
+			continue
+		}
+		idx := slab.used
+		slab.used++
+		a.nodeSlabCursor = i
+		a.used++
+		return &slab.data[idx]
+	}
+}
+
+func (a *nodeArena) ensureNodeCapacity(min int) {
+	if a == nil || min <= len(a.nodes) {
+		return
+	}
+	if a.used > 0 {
+		panic("ensureNodeCapacity called after arena allocations started")
+	}
+	newCap := len(a.nodes)
+	if newCap < minArenaNodeCap {
+		newCap = minArenaNodeCap
+	}
+	for newCap < min {
+		newCap *= 2
+	}
+	a.nodes = make([]Node, newCap)
+	a.used = 0
+	a.nodeSlabs = nil
+	a.nodeSlabCursor = 0
 }
 
 func (a *nodeArena) allocNodeSlice(n int) []*Node {
@@ -250,4 +445,41 @@ func defaultFieldSliceCap(class arenaClass) int {
 		return incrementalFieldSliceCap
 	}
 	return fullFieldSliceCap
+}
+
+func nodeCapacityForClass(class arenaClass) int {
+	if class == arenaClassIncremental {
+		return nodeCapacityForBytes(incrementalArenaSlab)
+	}
+	return nodeCapacityForBytes(fullParseArenaSlab)
+}
+
+func maxRetainedNodeCapacityForClass(class arenaClass) int {
+	factor := maxRetainedArenaFactor
+	floor := maxRetainedIncrementalNodeCap
+	if class == arenaClassFull {
+		factor = maxRetainedFullNodeArenaFactor
+		floor = maxRetainedFullNodeCap
+	}
+	capByFactor := nodeCapacityForClass(class) * factor
+	if capByFactor < floor {
+		return floor
+	}
+	return capByFactor
+}
+
+func maxRetainedOverflowNodeCapacityForClass(class arenaClass) int {
+	capacity := maxRetainedNodeCapacityForClass(class) / 2
+	if capacity < nodeCapacityForClass(class) {
+		return nodeCapacityForClass(class)
+	}
+	return capacity
+}
+
+func maxRetainedChildSliceCapForClass(class arenaClass) int {
+	return defaultChildSliceCap(class) * maxRetainedArenaFactor
+}
+
+func maxRetainedFieldSliceCapForClass(class arenaClass) int {
+	return defaultFieldSliceCap(class) * maxRetainedArenaFactor
 }
