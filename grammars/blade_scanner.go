@@ -328,6 +328,7 @@ func htmlScanStartTagName(lx htmlLexer, tags *[]htmlTag, startSym, scriptSym, st
 	tag := htmlTagForName(tagName)
 	*tags = append(*tags, tag)
 
+	lx.markEnd()
 	switch tag.tagType {
 	case htmlTagScript:
 		lexer.SetResultSymbol(scriptSym)
@@ -352,6 +353,7 @@ func htmlScanEndTagName(lx htmlLexer, tags *[]htmlTag, endSym, errEndSym gotrees
 	}
 
 	tag := htmlTagForName(tagName)
+	lx.markEnd()
 	if len(*tags) > 0 && htmlTagEq(&(*tags)[len(*tags)-1], &tag) {
 		*tags = (*tags)[:len(*tags)-1]
 		lexer.SetResultSymbol(endSym)
