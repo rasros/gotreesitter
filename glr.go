@@ -483,8 +483,10 @@ func stackCompare(a, b glrStack) int {
 		}
 		return -1
 	}
-	if a.depth() != b.depth() {
-		if a.depth() > b.depth() {
+	aDepth := a.depth()
+	bDepth := b.depth()
+	if aDepth != bDepth {
+		if aDepth > bDepth {
 			return 1
 		}
 		return -1
