@@ -734,8 +734,11 @@ func coalesceRanges(in []Range) []Range {
 // marks nodes that overlap the edited region as dirty.
 func editNode(n *Node, edit InputEdit) {
 	byteDelta := int64(edit.NewEndByte) - int64(edit.OldEndByte)
+	rowDelta := int64(edit.NewEndPoint.Row) - int64(edit.OldEndPoint.Row)
+	colDelta := int64(edit.NewEndPoint.Column) - int64(edit.OldEndPoint.Column)
 	hasTailShift := byteDelta != 0 || edit.NewEndPoint != edit.OldEndPoint
-	editNodeWithDelta(n, edit, byteDelta, hasTailShift)
+	var shiftScratch []*Node
+	editNodeWithDelta(n, edit, byteDelta, rowDelta, colDelta, hasTailShift, &shiftScratch)
 }
 
 func addUint32Delta(value uint32, delta int64) uint32 {
@@ -749,7 +752,7 @@ func addUint32Delta(value uint32, delta int64) uint32 {
 	return uint32(next)
 }
 
-func editNodeWithDelta(n *Node, edit InputEdit, byteDelta int64, hasTailShift bool) {
+func editNodeWithDelta(n *Node, edit InputEdit, byteDelta, rowDelta, colDelta int64, hasTailShift bool, shiftScratch *[]*Node) {
 	// If the node ends before the edit starts, it's completely unaffected.
 	if n.endByte <= edit.StartByte {
 		return
@@ -764,22 +767,18 @@ func editNodeWithDelta(n *Node, edit InputEdit, byteDelta int64, hasTailShift bo
 		n.endByte = addUint32Delta(n.endByte, byteDelta)
 		// Shift points approximately (row stays, col shifts if same row).
 		if n.startPoint.Row == edit.OldEndPoint.Row {
-			rowDelta := int64(edit.NewEndPoint.Row) - int64(edit.OldEndPoint.Row)
 			n.startPoint.Row = addUint32Delta(n.startPoint.Row, rowDelta)
 			if rowDelta == 0 {
-				colDelta := int64(edit.NewEndPoint.Column) - int64(edit.OldEndPoint.Column)
 				n.startPoint.Column = addUint32Delta(n.startPoint.Column, colDelta)
 			}
 		}
 		if n.endPoint.Row == edit.OldEndPoint.Row {
-			rowDelta := int64(edit.NewEndPoint.Row) - int64(edit.OldEndPoint.Row)
 			n.endPoint.Row = addUint32Delta(n.endPoint.Row, rowDelta)
 			if rowDelta == 0 {
-				colDelta := int64(edit.NewEndPoint.Column) - int64(edit.OldEndPoint.Column)
 				n.endPoint.Column = addUint32Delta(n.endPoint.Column, colDelta)
 			}
 		}
-		shiftSubtreeAfterEdit(n.children, edit, byteDelta)
+		shiftSubtreeAfterEdit(n.children, edit, byteDelta, rowDelta, colDelta, shiftScratch)
 		return
 	}
 
@@ -803,19 +802,22 @@ func editNodeWithDelta(n *Node, edit InputEdit, byteDelta int64, hasTailShift bo
 			if !hasTailShift {
 				continue
 			}
-			shiftSubtreeAfterEdit([]*Node{c}, edit, byteDelta)
+			shiftSubtreeNodeAfterEdit(c, edit, byteDelta, rowDelta, colDelta, shiftScratch)
 			continue
 		}
-		editNodeWithDelta(c, edit, byteDelta, hasTailShift)
+		editNodeWithDelta(c, edit, byteDelta, rowDelta, colDelta, hasTailShift, shiftScratch)
 	}
 }
 
-func shiftSubtreeAfterEdit(roots []*Node, edit InputEdit, byteDelta int64) {
+func shiftSubtreeAfterEdit(roots []*Node, edit InputEdit, byteDelta, rowDelta, colDelta int64, shiftScratch *[]*Node) {
 	if len(roots) == 0 {
 		return
 	}
 
-	stack := make([]*Node, 0, len(roots)*2)
+	var stack [](*Node)
+	if shiftScratch != nil {
+		stack = (*shiftScratch)[:0]
+	}
 	stack = append(stack, roots...)
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
@@ -825,18 +827,14 @@ func shiftSubtreeAfterEdit(roots []*Node, edit InputEdit, byteDelta int64) {
 		n.endByte = addUint32Delta(n.endByte, byteDelta)
 
 		if n.startPoint.Row == edit.OldEndPoint.Row {
-			rowDelta := int64(edit.NewEndPoint.Row) - int64(edit.OldEndPoint.Row)
 			n.startPoint.Row = addUint32Delta(n.startPoint.Row, rowDelta)
 			if rowDelta == 0 {
-				colDelta := int64(edit.NewEndPoint.Column) - int64(edit.OldEndPoint.Column)
 				n.startPoint.Column = addUint32Delta(n.startPoint.Column, colDelta)
 			}
 		}
 		if n.endPoint.Row == edit.OldEndPoint.Row {
-			rowDelta := int64(edit.NewEndPoint.Row) - int64(edit.OldEndPoint.Row)
 			n.endPoint.Row = addUint32Delta(n.endPoint.Row, rowDelta)
 			if rowDelta == 0 {
-				colDelta := int64(edit.NewEndPoint.Column) - int64(edit.OldEndPoint.Column)
 				n.endPoint.Column = addUint32Delta(n.endPoint.Column, colDelta)
 			}
 		}
@@ -845,6 +843,18 @@ func shiftSubtreeAfterEdit(roots []*Node, edit InputEdit, byteDelta int64) {
 			stack = append(stack, c)
 		}
 	}
+	if shiftScratch != nil {
+		*shiftScratch = stack[:0]
+	}
+}
+
+func shiftSubtreeNodeAfterEdit(root *Node, edit InputEdit, byteDelta, rowDelta, colDelta int64, shiftScratch *[]*Node) {
+	if root == nil {
+		return
+	}
+	var roots [1]*Node
+	roots[0] = root
+	shiftSubtreeAfterEdit(roots[:], edit, byteDelta, rowDelta, colDelta, shiftScratch)
 }
 
 // DiffChangedRanges compares two syntax trees and returns the minimal
