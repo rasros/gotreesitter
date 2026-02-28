@@ -304,6 +304,7 @@ func tsScanJsxText(lexer *gotreesitter.ExternalLexer) bool {
 		lexer.Advance(false)
 	}
 
+	lexer.MarkEnd()
 	lexer.SetResultSymbol(tsSymJsxText)
 	return sawText
 }

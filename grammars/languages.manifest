@@ -55,7 +55,7 @@ bibtex https://github.com/latex-lsp/tree-sitter-bibtex src
 bicep https://github.com/amaanq/tree-sitter-bicep src
 bitbake https://github.com/amaanq/tree-sitter-bitbake src
 blade https://github.com/EmranMR/tree-sitter-blade src
-brightscript https://github.com/ajdelcimmuto/tree-sitter-brightscript src
+brightscript https://github.com/ajdelcimmuto/tree-sitter-brightscript a59e5bd5151d37a95c7e9544957be94b905a10f3 src
 caddy https://github.com/opa-oz/tree-sitter-caddy src
 cairo https://github.com/amaanq/tree-sitter-cairo src
 capnp https://github.com/amaanq/tree-sitter-capnp src
