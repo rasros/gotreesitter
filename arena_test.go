@@ -28,7 +28,7 @@ func TestEnsureNodeCapacityPreallocationBeforeUse(t *testing.T) {
 }
 
 func TestAllocNodeUsesOverflowSlabsWhenPrimaryExhausted(t *testing.T) {
-	arena := newNodeArena(arenaClassIncremental, incrementalArenaSlab)
+	arena := newNodeArena(arenaClassIncremental)
 	primaryCap := len(arena.nodes)
 	if primaryCap <= 0 {
 		t.Fatal("expected positive primary node capacity")
@@ -51,7 +51,7 @@ func TestAllocNodeUsesOverflowSlabsWhenPrimaryExhausted(t *testing.T) {
 }
 
 func TestArenaResetRetainsOverflowWithinBudget(t *testing.T) {
-	arena := newNodeArena(arenaClassIncremental, incrementalArenaSlab)
+	arena := newNodeArena(arenaClassIncremental)
 	primaryCap := len(arena.nodes)
 	if primaryCap <= 0 {
 		t.Fatal("expected positive primary node capacity")

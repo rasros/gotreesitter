@@ -1,3 +1,7 @@
+// Package grammars provides 206 embedded tree-sitter grammars as compressed
+// binary blobs with lazy loading. Use AllLanguages to enumerate available
+// grammars, DetectLanguage to match by file extension or shebang, or call
+// individual language functions (e.g. GoLanguage()) for direct access.
 package grammars
 
 import (
