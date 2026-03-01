@@ -438,9 +438,84 @@ func populateParentNode(n *Node, children []*Node) {
 			c.childIndex = i
 			if c.hasError {
 				n.hasError = true
+				break
 			}
 		}
 	}
+}
+
+func populateParentNodeNoLinks(n *Node, children []*Node) {
+	switch len(children) {
+	case 0:
+		return
+	case 1:
+		c0 := children[0]
+		n.startByte = c0.startByte
+		n.endByte = c0.endByte
+		n.startPoint = c0.startPoint
+		n.endPoint = c0.endPoint
+		n.hasError = c0.hasError
+		return
+	case 2:
+		c0 := children[0]
+		c1 := children[1]
+		n.startByte = c0.startByte
+		n.endByte = c1.endByte
+		n.startPoint = c0.startPoint
+		n.endPoint = c1.endPoint
+		n.hasError = c0.hasError || c1.hasError
+		return
+	default:
+		first := children[0]
+		last := children[len(children)-1]
+		n.startByte = first.startByte
+		n.endByte = last.endByte
+		n.startPoint = first.startPoint
+		n.endPoint = last.endPoint
+		for i := range children {
+			if children[i].hasError {
+				n.hasError = true
+				break
+			}
+		}
+	}
+}
+
+func wireParentLinksWithScratch(root *Node, scratch *[]*Node) {
+	if root == nil {
+		return
+	}
+	root.parent = nil
+	root.childIndex = -1
+
+	var stack []*Node
+	if scratch != nil {
+		stack = (*scratch)[:0]
+	} else {
+		var local [64]*Node
+		stack = local[:0]
+	}
+	stack = append(stack, root)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for i := range n.children {
+			c := n.children[i]
+			if c == nil {
+				continue
+			}
+			c.parent = n
+			c.childIndex = i
+			stack = append(stack, c)
+		}
+	}
+	if scratch != nil {
+		*scratch = stack[:0]
+	}
+}
+
+func wireParentLinks(root *Node) {
+	wireParentLinksWithScratch(root, nil)
 }
 
 func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
@@ -516,6 +591,25 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
+	return n
+}
+
+func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+	if arena == nil {
+		return newParentNode(nil, sym, named, children, fieldIDs, productionID)
+	}
+	if perfCountersEnabled {
+		perfRecordParentChildren(len(children))
+	}
+	n := arena.allocNodeFast()
+	n.ownerArena = arena
+	n.symbol = sym
+	n.isNamed = named
+	n.children = children
+	n.fieldIDs = fieldIDs
+	n.productionID = productionID
+	n.childIndex = -1
+	populateParentNodeNoLinks(n, children)
 	return n
 }
 

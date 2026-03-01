@@ -56,6 +56,7 @@ type parserScratch struct {
 	gss        gssScratch
 	tmpEntries []stackEntry
 	glrStates  []StateID
+	nodeLinks  []*Node
 }
 
 var parserScratchPool = sync.Pool{
@@ -244,6 +245,12 @@ func releaseParserScratch(s *parserScratch) {
 		s.glrStates = nil
 	} else if len(s.glrStates) > 0 {
 		s.glrStates = s.glrStates[:0]
+	}
+	const maxRetainedNodeLinkStack = 256 * 1024
+	if cap(s.nodeLinks) > maxRetainedNodeLinkStack {
+		s.nodeLinks = nil
+	} else if len(s.nodeLinks) > 0 {
+		s.nodeLinks = s.nodeLinks[:0]
 	}
 	s.entries.reset()
 	s.gss.reset()
@@ -1757,6 +1764,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	}
 	scratch := acquireParserScratch()
 	defer releaseParserScratch(scratch)
+	deferParentLinks := reuse == nil && oldTree == nil
 
 	arena := acquireNodeArena(arenaClass)
 	arena.skipChildClear = reuse == nil && oldTree == nil
@@ -1831,7 +1839,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		return tree
 	}
 	finalize := func(stacks []glrStack, stopReason ParseStopReason) *Tree {
-		tree := p.buildResultFromGLR(stacks, source, arena, oldTree, &reuseState)
+		tree := p.buildResultFromGLR(stacks, source, arena, oldTree, &reuseState, &scratch.nodeLinks)
 		return finalizeTree(tree, stopReason)
 	}
 	finalizeErrorTree := func(stopReason ParseStopReason) *Tree {
@@ -2075,7 +2083,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 						s.dead = true
 						continue
 					}
-					p.applyAction(s, recoverAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyAction(s, recoverAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
 					needToken = true
 					continue
 				}
@@ -2114,7 +2122,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 				if reuse != nil {
 					act := actions[0]
-					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
 					continue
 				}
 				if perfCountersEnabled {
@@ -2126,7 +2134,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				const maxForkCloneDepth = 4 * 1024
 				if s.depth() > maxForkCloneDepth {
 					act := actions[0]
-					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
 					continue
 				}
 				// Copy the current stack value before appending forks.
@@ -2135,19 +2143,19 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				for ai := 1; ai < len(actions); ai++ {
 					fork := base.cloneWithScratch(&scratch.gss)
 					act := actions[ai]
-					p.applyAction(&fork, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyAction(&fork, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
 					stacks = append(stacks, fork)
 				}
 				// Re-acquire the pointer after possible reallocation.
 				s = &stacks[si]
 				act := actions[0]
-				p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+				p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
 			} else {
 				act := actions[0]
 				if act.Type == ParseActionReduce {
-					p.applyActionWithReduceChain(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyActionWithReduceChain(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
 				} else {
-					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
 				}
 			}
 		}
@@ -2243,15 +2251,15 @@ func classifyConflictShape(actions []ParseAction) (rrConflict, rsConflict bool) 
 	return reduceCount >= 2, false
 }
 
-func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry) {
-	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries)
+func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool) {
+	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks)
 	if act.Type != ParseActionReduce || s == nil || s.dead || s.accepted || s.shifted {
 		return
 	}
-	p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries)
+	p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks)
 }
 
-func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry) {
+func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool) {
 	if s == nil || s.dead || s.accepted || s.shifted {
 		return
 	}
@@ -2280,7 +2288,7 @@ func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bo
 			if perfCountersEnabled {
 				perfRecordReduceChainStep(chainLen)
 			}
-			p.applyAction(s, next, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries)
+			p.applyAction(s, next, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks)
 			if s.dead || s.accepted || s.shifted {
 				return
 			}
@@ -2304,7 +2312,7 @@ func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bo
 }
 
 // applyAction applies a single parse action to a GLR stack.
-func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry) {
+func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool) {
 	switch act.Type {
 	case ParseActionShift:
 		named := p.isNamedSymbol(tok.Symbol)
@@ -2329,7 +2337,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				if tmpEntries != nil {
 					tmp = *tmpEntries
 				}
-				p.applyReduceActionFromGSS(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, tmp)
+				p.applyReduceActionFromGSS(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, tmp, deferParentLinks)
 				return
 			}
 			if s.cacheEntries {
@@ -2342,7 +2350,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				entries, borrowed = s.entriesForRead(tmp)
 			}
 		}
-		p.applyReduceAction(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, entries)
+		p.applyReduceAction(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, entries, deferParentLinks)
 		if borrowed && tmpEntries != nil {
 			*tmpEntries = entries[:0]
 		}
@@ -2413,7 +2421,7 @@ func reduceWindowFromGSS(s *glrStack, childCount int, buf []stackEntry) ([]stack
 	return rev, topState, true
 }
 
-func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, tmp []stackEntry) {
+func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, tmp []stackEntry, deferParentLinks bool) {
 	childCount := int(act.ChildCount)
 	windowEntries, topState, ok := reduceWindowFromGSS(s, childCount, tmp)
 	if !ok {
@@ -2462,7 +2470,12 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduc
 	}
 
 	named := p.isNamedSymbol(act.Symbol)
-	parent := newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+	var parent *Node
+	if deferParentLinks {
+		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+	} else {
+		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+	}
 	shouldUseRawSpan := len(children) == 0
 	if !shouldUseRawSpan && p.forceRawSpanAll {
 		shouldUseRawSpan = true
@@ -2680,7 +2693,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	return children, fieldIDs
 }
 
-func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry) {
+func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry, deferParentLinks bool) {
 	childCount := int(act.ChildCount)
 	window, ok := computeReduceRange(entries, childCount)
 	if !ok {
@@ -2716,7 +2729,12 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 	}
 
 	named := p.isNamedSymbol(act.Symbol)
-	parent := newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+	var parent *Node
+	if deferParentLinks {
+		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+	} else {
+		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+	}
 	shouldUseRawSpan := len(children) == 0
 	if !shouldUseRawSpan && p.forceRawSpanAll {
 		shouldUseRawSpan = true
@@ -2932,7 +2950,7 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 
 // buildResultFromGLR picks the best stack and constructs the final tree.
 // Prefers accepted stacks, then highest score, then most entries.
-func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState) *Tree {
+func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState, linkScratch *[]*Node) *Tree {
 	if len(stacks) == 0 {
 		arena.Release()
 		return parseErrorTree(source, p.language)
@@ -2947,12 +2965,12 @@ func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nod
 
 	selected := stacks[best]
 	if len(selected.entries) > 0 {
-		return p.buildResult(selected.entries, source, arena, oldTree, reuseState)
+		return p.buildResult(selected.entries, source, arena, oldTree, reuseState, linkScratch)
 	}
 	if selected.gss.head == nil {
-		return p.buildResult(nil, source, arena, oldTree, reuseState)
+		return p.buildResult(nil, source, arena, oldTree, reuseState, linkScratch)
 	}
-	return p.buildResultFromNodes(nodesFromGSS(selected.gss), source, arena, oldTree, reuseState)
+	return p.buildResultFromNodes(nodesFromGSS(selected.gss), source, arena, oldTree, reuseState, linkScratch)
 }
 
 // lookupAction looks up the parse action for the given state and symbol.
@@ -3112,17 +3130,17 @@ func nodesFromGSS(stack gssStack) []*Node {
 }
 
 // buildResult constructs the final Tree from a stack of entries.
-func (p *Parser) buildResult(stack []stackEntry, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState) *Tree {
+func (p *Parser) buildResult(stack []stackEntry, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState, linkScratch *[]*Node) *Tree {
 	var nodes []*Node
 	for _, entry := range stack {
 		if entry.node != nil {
 			nodes = append(nodes, entry.node)
 		}
 	}
-	return p.buildResultFromNodes(nodes, source, arena, oldTree, reuseState)
+	return p.buildResultFromNodes(nodes, source, arena, oldTree, reuseState, linkScratch)
 }
 
-func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState) *Tree {
+func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState, linkScratch *[]*Node) *Tree {
 	if len(nodes) == 0 {
 		arena.Release()
 		if isWhitespaceOnlySource(source) {
@@ -3138,6 +3156,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 
 	expectedRootSymbol := Symbol(0)
 	hasExpectedRoot := false
+	shouldWireParentLinks := oldTree == nil
 	if oldTree != nil && oldTree.RootNode() != nil {
 		expectedRootSymbol = oldTree.RootNode().symbol
 		hasExpectedRoot = true
@@ -3157,6 +3176,9 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		candidate := nodes[0]
 		extendNodeToTrailingWhitespace(candidate, source)
 		if !hasExpectedRoot || candidate.symbol == expectedRootSymbol {
+			if shouldWireParentLinks {
+				wireParentLinksWithScratch(candidate, linkScratch)
+			}
 			return newTreeWithArenas(candidate, source, p.language, arena, getBorrowed())
 		}
 
@@ -3171,6 +3193,9 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		}
 		root := newParentNodeInArena(arena, expectedRootSymbol, true, rootChildren, nil, 0)
 		extendNodeToTrailingWhitespace(root, source)
+		if shouldWireParentLinks {
+			wireParentLinksWithScratch(root, linkScratch)
+		}
 		return newTreeWithArenas(root, source, p.language, arena, getBorrowed())
 	}
 
@@ -3231,14 +3256,6 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 				copy(padded[leadingCount:], realRoot.fieldIDs)
 				realRoot.fieldIDs = padded
 			}
-			// Update parent pointers and child indexes for folded extras.
-			for i, c := range realRoot.children {
-				if c == nil {
-					continue
-				}
-				c.parent = realRoot
-				c.childIndex = i
-			}
 			// Extend root range to cover the extras.
 			for _, e := range extras {
 				if e.startByte < realRoot.startByte {
@@ -3264,6 +3281,9 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		}
 		extendNodeToTrailingWhitespace(realRoot, source)
 		if !hasExpectedRoot || realRoot.symbol == expectedRootSymbol {
+			if shouldWireParentLinks {
+				wireParentLinksWithScratch(realRoot, linkScratch)
+			}
 			return newTreeWithArenas(realRoot, source, p.language, arena, getBorrowed())
 		}
 	}
@@ -3276,5 +3296,8 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 	root := newParentNodeInArena(arena, rootSymbol, true, rootChildren, nil, 0)
 	root.hasError = true
 	extendNodeToTrailingWhitespace(root, source)
+	if shouldWireParentLinks {
+		wireParentLinksWithScratch(root, linkScratch)
+	}
 	return newTreeWithArenas(root, source, p.language, arena, getBorrowed())
 }

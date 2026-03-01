@@ -768,7 +768,7 @@ func TestBuildResultFoldExtrasPreservesFieldMappings(t *testing.T) {
 		{state: 0, node: trailingExtra},
 	}
 
-	tree := parser.buildResult(stack, source, nil, nil, nil)
+	tree := parser.buildResult(stack, source, nil, nil, nil, nil)
 	if tree == nil || tree.RootNode() == nil {
 		t.Fatal("buildResult returned nil tree/root")
 	}
@@ -860,7 +860,7 @@ func TestBuildResultFromGLRWithGSSOnlyStack(t *testing.T) {
 	gss.push(expr.parseState, expr, &gScratch)
 	stack := glrStack{gss: gss}
 
-	tree := parser.buildResultFromGLR([]glrStack{stack}, source, arena, nil, nil)
+	tree := parser.buildResultFromGLR([]glrStack{stack}, source, arena, nil, nil, nil)
 	if tree == nil || tree.RootNode() == nil {
 		t.Fatal("buildResultFromGLR returned nil tree/root")
 	}
