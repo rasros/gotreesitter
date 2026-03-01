@@ -156,11 +156,11 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
 	if err := p.checkLanguageCompatible(); err != nil {
 		return nil, err
 	}
-	if err := p.checkDFALexer(); err != nil {
-		return nil, err
-	}
 	if canReuseUnchangedTree(source, oldTree, p.language) {
 		return oldTree, nil
+	}
+	if err := p.checkDFALexer(); err != nil {
+		return nil, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := &dfaTokenSource{
@@ -193,11 +193,11 @@ func (p *Parser) ParseIncrementalProfiled(source []byte, oldTree *Tree) (*Tree, 
 	if err := p.checkLanguageCompatible(); err != nil {
 		return nil, IncrementalParseProfile{}, err
 	}
-	if err := p.checkDFALexer(); err != nil {
-		return nil, IncrementalParseProfile{}, err
-	}
 	if canReuseUnchangedTree(source, oldTree, p.language) {
 		return oldTree, IncrementalParseProfile{}, nil
+	}
+	if err := p.checkDFALexer(); err != nil {
+		return nil, IncrementalParseProfile{}, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := &dfaTokenSource{
