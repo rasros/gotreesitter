@@ -6,7 +6,7 @@ Pure-Go [tree-sitter](https://tree-sitter.github.io/) runtime. No CGo, no C tool
 go get github.com/odvcencio/gotreesitter
 ```
 
-gotreesitter loads the same parse-table format that tree-sitter's C runtime uses. Grammar tables are extracted from upstream `parser.c` files by `ts2go`, compressed into binary blobs, and deserialized on first use. 209 grammars ship in the registry.
+gotreesitter loads the same parse-table format that tree-sitter's C runtime uses. Grammar tables are extracted from upstream `parser.c` files by `ts2go`, compressed into binary blobs, and deserialized on first use. 206 grammars ship in the registry.
 
 ## Motivation
 
@@ -275,7 +275,7 @@ Emits `bench_out/matrix.json` (machine-readable), `bench_out/matrix.md` (summary
 
 ## Supported languages
 
-209 grammars ship in the registry. 208 produce error-free parse trees on their smoke samples; 1 is degraded (`norg`). Run `go run ./cmd/parity_report` for current status.
+206 grammars ship in the registry. 202 currently produce error-free parse trees on smoke samples; 4 are degraded (`disassembly`, `norg`, `properties`, `vimdoc`). Run `go run ./cmd/parity_report` for current status.
 
 - 14 hand-written (😉) Go external scanners (python, elixir, comment, doxygen, foam, nginx, nushell, r, xml, yuck, purescript, typst, html, yaml)
 - 8 hand-written Go token sources (authzed, c, go, html, java, json, lua, toml)
@@ -294,7 +294,7 @@ Each `LangEntry` carries a `Quality` field:
 `full` means the parser has every component the grammar requires. It does not guarantee error-free trees on all inputs — grammars with high GLR ambiguity may produce syntax errors on very large or deeply nested constructs due to parser safety limits (iteration cap, stack depth cap, node count cap). These limits scale with input size. Check `tree.RootNode().HasError()` at runtime.
 
 <details>
-<summary>Full language list (209)</summary>
+<summary>Full language list (206)</summary>
 
 `ada`, `agda`, `angular`, `apex`, `arduino`, `asm`, `astro`, `authzed`, `awk`, `bash`, `bass`, `beancount`, `bibtex`, `bicep`, `bitbake`, `blade`, `brightscript`, `c`, `c_sharp`, `caddy`, `cairo`, `capnp`, `chatito`, `circom`, `clojure`, `cmake`, `cobol`, `comment`, `commonlisp`, `cooklang`, `corn`, `cpon`, `cpp`, `crystal`, `css`, `csv`, `cuda`, `cue`, `cylc`, `d`, `dart`, `desktop`, `devicetree`, `dhall`, `diff`, `disassembly`, `djot`, `dockerfile`, `dot`, `doxygen`, `dtd`, `earthfile`, `ebnf`, `editorconfig`, `eds`, `eex`, `elisp`, `elixir`, `elm`, `elsa`, `embedded_template`, `enforce`, `erlang`, `facility`, `faust`, `fennel`, `fidl`, `firrtl`, `fish`, `foam`, `forth`, `fortran`, `fsharp`, `gdscript`, `git_config`, `git_rebase`, `gitattributes`, `gitcommit`, `gitignore`, `gleam`, `glsl`, `gn`, `go`, `godot_resource`, `gomod`, `graphql`, `groovy`, `hack`, `hare`, `haskell`, `haxe`, `hcl`, `heex`, `hlsl`, `html`, `http`, `hurl`, `hyprlang`, `ini`, `janet`, `java`, `javascript`, `jinja2`, `jq`, `jsdoc`, `json`, `json5`, `jsonnet`, `julia`, `just`, `kconfig`, `kdl`, `kotlin`, `ledger`, `less`, `linkerscript`, `liquid`, `llvm`, `lua`, `luau`, `make`, `markdown`, `markdown_inline`, `matlab`, `mermaid`, `meson`, `mojo`, `move`, `nginx`, `nickel`, `nim`, `ninja`, `nix`, `norg`, `nushell`, `objc`, `ocaml`, `odin`, `org`, `pascal`, `pem`, `perl`, `php`, `pkl`, `powershell`, `prisma`, `prolog`, `promql`, `properties`, `proto`, `pug`, `puppet`, `purescript`, `python`, `ql`, `r`, `racket`, `regex`, `rego`, `requirements`, `rescript`, `robot`, `ron`, `rst`, `ruby`, `rust`, `scala`, `scheme`, `scss`, `smithy`, `solidity`, `sparql`, `sql`, `squirrel`, `ssh_config`, `starlark`, `svelte`, `swift`, `tablegen`, `tcl`, `teal`, `templ`, `textproto`, `thrift`, `tlaplus`, `tmux`, `todotxt`, `toml`, `tsx`, `turtle`, `twig`, `typescript`, `typst`, `uxntal`, `v`, `verilog`, `vhdl`, `vimdoc`, `vue`, `wat`, `wgsl`, `wolfram`, `xml`, `yaml`, `yuck`, `zig`
 
@@ -329,7 +329,7 @@ All shipped highlight and tags queries compile (`156/156` highlight, `69/69` tag
 
 - **Full-parse throughput**: ~11x slower than the C runtime on the Go grammar benchmark. The GLR parse loop, Go bounds checking, interface dispatch, and GC write barriers account for the gap. Incremental reparsing amortizes this for interactive use.
 - **GLR safety caps**: The parser enforces iteration, stack depth, and node count limits proportional to input size. These prevent pathological blowup on grammars with high ambiguity but impose a ceiling on the maximum input complexity that parses without error. The caps are tunable but not removable without risking unbounded resource consumption.
-- **Degraded grammars**: 1 of 209 grammars is degraded: `norg` (external scanner with 122 token types, C++ scanner not yet ported). Check `entry.Quality` and `tree.RootNode().HasError()`.
+- **Degraded grammars**: 4 of 206 grammars are currently degraded: `disassembly`, `norg`, `properties`, and `vimdoc`. Check `entry.Quality` and `tree.RootNode().HasError()`.
 
 ## Adding a language
 
@@ -406,11 +406,11 @@ GOT_GLR_MAX_STACKS=12  # overrides default GLR stack cap (default: 6)
 go test ./... -race -count=1
 ```
 
-Test suite covers: smoke tests (209 grammars), golden S-expression snapshots, highlight query validation, query pattern matching, incremental reparse correctness, error recovery, GLR fork/merge, injection parsing, source rewriting, and fuzz targets.
+Test suite covers: smoke tests (206 grammars), golden S-expression snapshots, highlight query validation, query pattern matching, incremental reparse correctness, error recovery, GLR fork/merge, injection parsing, source rewriting, and fuzz targets.
 
 ## Roadmap
 
-v0.5.0 — 209 grammars, GLR parser, incremental reparsing, query engine, tree cursor, highlighting, tagging, ABI 15 support, injection parser, typed query codegen, CST rewriter.
+v0.5.0 — 206 grammars, GLR parser, incremental reparsing, query engine, tree cursor, highlighting, tagging, ABI 15 support, injection parser, typed query codegen, CST rewriter.
 
 Next:
 - Corpus parity testing against C tree-sitter reference output
