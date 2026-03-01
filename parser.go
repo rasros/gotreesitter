@@ -1759,6 +1759,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	defer releaseParserScratch(scratch)
 
 	arena := acquireNodeArena(arenaClass)
+	arena.skipChildClear = reuse == nil && oldTree == nil
 	if timing != nil {
 		startUsed := arena.used
 		defer func() {

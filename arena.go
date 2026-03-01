@@ -48,6 +48,9 @@ type nodeArena struct {
 	nodes []Node
 	used  int
 	refs  atomic.Int32
+	// skipChildClear allows reset() to skip child-slab pointer clearing when
+	// a parse did not borrow any external nodes (full parse without reuse).
+	skipChildClear bool
 
 	nodeSlabs      []nodeSlab
 	nodeSlabCursor int
@@ -268,9 +271,12 @@ func (a *nodeArena) reset() {
 
 	for i := range a.childSlabs {
 		slab := &a.childSlabs[i]
-		clear(slab.data[:slab.used])
+		if !a.skipChildClear {
+			clear(slab.data[:slab.used])
+		}
 		slab.used = 0
 	}
+	a.skipChildClear = false
 	for i := range a.fieldSlabs {
 		a.fieldSlabs[i].used = 0
 	}
