@@ -18,9 +18,9 @@ const (
 	// Default capacities for slice backing storage used by reduce actions.
 	// Full parses allocate many more parent-child edges than incremental edits.
 	incrementalChildSliceCap = 2 * 1024
-	fullChildSliceCap        = 32 * 1024
+	fullChildSliceCap        = 64 * 1024
 	incrementalFieldSliceCap = 2 * 1024
-	fullFieldSliceCap        = 32 * 1024
+	fullFieldSliceCap        = 64 * 1024
 
 	maxRetainedArenaFactor = 4
 	// Full-parse node slabs are much larger; keep more headroom so capacity
