@@ -38,6 +38,9 @@ type QueryStep struct {
 	// For alternation steps, alternatives lists the alternative symbols
 	// that can match at this position. If non-nil, symbol is ignored.
 	alternatives []alternativeSymbol
+	// altIndex accelerates alternation branch selection while preserving
+	// declaration order. It is built once at query compile time.
+	altIndex *queryAlternationIndex
 	// textMatch is for string literal matching ("func", "return", etc.).
 	// When non-empty, we match anonymous nodes whose symbol name equals this.
 	textMatch string
@@ -205,6 +208,7 @@ func NewQuery(source string, lang *Language) (*Query, error) {
 	if err := p.parse(); err != nil {
 		return nil, err
 	}
+	p.q.buildAlternationIndices()
 	p.q.buildRootPatternIndex()
 	return p.q, nil
 }

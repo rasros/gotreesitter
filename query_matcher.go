@@ -311,39 +311,134 @@ func (q *Query) matchChildStepsRecursive(
 }
 
 func (q *Query) matchAlternationStep(step *QueryStep, node *Node, lang *Language, source []byte, captures *[]QueryCapture) bool {
+	hasStepCaptures := len(step.captureIDs) > 0 || step.captureID >= 0
+	nodeSymbol := node.Symbol()
+	nodeNamed := node.IsNamed()
+	var nodeType string
+	nodeTypeLoaded := false
+
+	if idx := step.altIndex; idx != nil {
+		key := alternationSymbolNamedKey(nodeSymbol, nodeNamed)
+		symbolMatches := idx.bySymbolNamed[key]
+		var textMatches []int
+		if !nodeNamed && len(idx.byText) > 0 {
+			nodeType = node.Type(lang)
+			nodeTypeLoaded = true
+			textMatches = idx.byText[nodeType]
+		}
+		wildcardMatches := idx.wildcard
+		if len(symbolMatches) == 0 && len(textMatches) == 0 && len(wildcardMatches) == 0 {
+			return false
+		}
+
+		iSym, iText, iWild := 0, 0, 0
+		for {
+			nextSrc := 0
+			nextAlt := -1
+			if iSym < len(symbolMatches) {
+				nextSrc = 1
+				nextAlt = symbolMatches[iSym]
+			}
+			if iText < len(textMatches) && (nextAlt < 0 || textMatches[iText] < nextAlt) {
+				nextSrc = 2
+				nextAlt = textMatches[iText]
+			}
+			if iWild < len(wildcardMatches) && (nextAlt < 0 || wildcardMatches[iWild] < nextAlt) {
+				nextSrc = 3
+				nextAlt = wildcardMatches[iWild]
+			}
+			if nextAlt < 0 {
+				break
+			}
+
+			if q.matchAlternationBranch(step, &step.alternatives[nextAlt], node, lang, source, captures, hasStepCaptures) {
+				return true
+			}
+
+			switch nextSrc {
+			case 1:
+				iSym++
+			case 2:
+				iText++
+			case 3:
+				iWild++
+			}
+		}
+		return false
+	}
+
 	for _, alt := range step.alternatives {
-		if !alternativeMatchesNode(alt, node, lang) {
+		if !alternativeMatchesNodeCached(alt, node, lang, nodeSymbol, nodeNamed, &nodeType, &nodeTypeLoaded) {
 			continue
+		}
+		if q.matchAlternationBranch(step, &alt, node, lang, source, captures, hasStepCaptures) {
+			return true
+		}
+	}
+	return false
+}
+
+func (q *Query) matchAlternationBranch(
+	step *QueryStep,
+	alt *alternativeSymbol,
+	node *Node,
+	lang *Language,
+	source []byte,
+	captures *[]QueryCapture,
+	hasStepCaptures bool,
+) bool {
+	if len(alt.steps) > 0 {
+		// Fast path: no alternation-level captures and no branch predicates.
+		// matchStepWithRollback already protects captures from failed branches.
+		if !hasStepCaptures && len(alt.predicates) == 0 {
+			return q.matchStepWithRollback(alt.steps, 0, node, lang, source, captures)
 		}
 
 		checkpoint := len(*captures)
-
-		// Captures on the alternation itself apply regardless of chosen branch.
-		q.appendCaptureIDs(step.captureIDs, step.captureID, node, captures)
-
-		if len(alt.steps) > 0 {
-			if !q.matchStepWithRollback(alt.steps, 0, node, lang, source, captures) {
-				*captures = (*captures)[:checkpoint]
-				continue
-			}
-			if len(alt.predicates) > 0 && !q.matchesPredicates(alt.predicates, *captures, lang, source) {
-				*captures = (*captures)[:checkpoint]
-				continue
-			}
-			return true
+		if hasStepCaptures {
+			// Captures on the alternation itself apply regardless of chosen branch.
+			q.appendCaptureIDs(step.captureIDs, step.captureID, node, captures)
 		}
-
-		// Simple alternation branch captures (no nested structure).
-		q.appendCaptureIDs(alt.captureIDs, alt.captureID, node, captures)
+		if !q.matchStepWithRollback(alt.steps, 0, node, lang, source, captures) {
+			*captures = (*captures)[:checkpoint]
+			return false
+		}
+		if len(alt.predicates) > 0 && !q.matchesPredicates(alt.predicates, *captures, lang, source) {
+			*captures = (*captures)[:checkpoint]
+			return false
+		}
 		return true
 	}
-	return false
+
+	// Simple alternation branch captures (no nested structure).
+	if !hasStepCaptures && len(alt.captureIDs) == 0 && alt.captureID < 0 {
+		return true
+	}
+	if hasStepCaptures {
+		q.appendCaptureIDs(step.captureIDs, step.captureID, node, captures)
+	}
+	q.appendCaptureIDs(alt.captureIDs, alt.captureID, node, captures)
+	return true
 }
 
 // nodeMatchesStep checks if a single node matches a single step's type/symbol constraint.
 func (q *Query) nodeMatchesStep(step *QueryStep, node *Node, lang *Language) bool {
 	// Alternation matching.
 	if len(step.alternatives) > 0 {
+		if idx := step.altIndex; idx != nil {
+			if len(idx.wildcard) > 0 {
+				return true
+			}
+			if len(idx.bySymbolNamed[alternationSymbolNamedKey(node.Symbol(), node.IsNamed())]) > 0 {
+				return true
+			}
+			if !node.IsNamed() && len(idx.byText) > 0 {
+				if len(idx.byText[node.Type(lang)]) > 0 {
+					return true
+				}
+			}
+			return false
+		}
 		for _, alt := range step.alternatives {
 			if alternativeMatchesNode(alt, node, lang) {
 				return true
@@ -401,4 +496,33 @@ func alternativeMatchesNode(alt alternativeSymbol, node *Node, lang *Language) b
 	}
 
 	return node.Symbol() == alt.symbol && node.IsNamed() == alt.isNamed
+}
+
+func alternativeMatchesNodeCached(
+	alt alternativeSymbol,
+	node *Node,
+	lang *Language,
+	nodeSymbol Symbol,
+	nodeNamed bool,
+	nodeType *string,
+	nodeTypeLoaded *bool,
+) bool {
+	// Wildcard in alternation `( _ )` should match any node.
+	if alt.symbol == 0 && alt.textMatch == "" {
+		return true
+	}
+
+	if alt.textMatch != "" {
+		// String match for anonymous nodes.
+		if nodeNamed {
+			return false
+		}
+		if !*nodeTypeLoaded {
+			*nodeType = node.Type(lang)
+			*nodeTypeLoaded = true
+		}
+		return *nodeType == alt.textMatch
+	}
+
+	return nodeSymbol == alt.symbol && nodeNamed == alt.isNamed
 }
