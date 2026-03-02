@@ -907,23 +907,27 @@ func parseFieldMapEntry(g *ExtractedGrammar, body string) (FieldMapEntry, bool) 
 		}
 	}
 
-	// Fallback for positional entries: field_id, child_index, inherited
-	if !found {
+	// Positional fallback for field_id, child_index, inherited.
+	// Also handles mixed syntax like {field_name, 0, .inherited = true}
+	// where .inherited matched above but field_id/child_index are positional.
+	if !found || entry.FieldID == 0 {
 		tokens := parseIdentifierLikeTokens(body)
-		if len(tokens) == 0 {
+		if len(tokens) == 0 && !found {
 			return entry, false
 		}
 
-		if len(tokens) >= 1 {
+		if entry.FieldID == 0 && len(tokens) >= 1 {
 			if v, ok := parseFieldMapToken(g, tokens[0]); ok {
 				entry.FieldID = v
 				found = true
 			}
 		}
-		if len(tokens) >= 2 {
-			if v, ok := parseFieldMapUnsignedInt(tokens[1]); ok {
-				entry.ChildIndex = v
-				found = true
+		if !found || entry.ChildIndex == 0 {
+			if len(tokens) >= 2 {
+				if v, ok := parseFieldMapUnsignedInt(tokens[1]); ok {
+					entry.ChildIndex = v
+					found = true
+				}
 			}
 		}
 		if len(tokens) >= 3 {
@@ -1318,6 +1322,12 @@ func parseReduceActionArgs(args string, g *ExtractedGrammar) (ExtractedAction, e
 		return ExtractedAction{}, fmt.Errorf("reduce expects at least symbol and child count")
 	}
 
+	// Detect named-argument format: REDUCE(.symbol = X, .child_count = Y, ...)
+	// Newer tree-sitter versions emit this instead of positional REDUCE(X, Y, ...).
+	if strings.Contains(fields[0], "=") {
+		return parseReduceNamedArgs(fields, g)
+	}
+
 	symStr := strings.TrimSpace(fields[0])
 	sym, _ := g.resolveSymbol(symStr)
 	childCount, err := strconv.Atoi(strings.TrimSpace(fields[1]))
@@ -1367,6 +1377,54 @@ func parseReduceActionArgs(args string, g *ExtractedGrammar) (ExtractedAction, e
 		action.ProductionID = numericExtras[1]
 	}
 
+	return action, nil
+}
+
+// parseReduceNamedArgs handles the named-argument REDUCE format used by newer
+// tree-sitter versions: REDUCE(.symbol = X, .child_count = Y, .production_id = Z).
+func parseReduceNamedArgs(fields []string, g *ExtractedGrammar) (ExtractedAction, error) {
+	action := ExtractedAction{Type: "reduce"}
+	hasSymbol, hasChildCount := false, false
+
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(key), "."))
+		value = strings.TrimSpace(value)
+
+		switch key {
+		case "symbol":
+			sym, _ := g.resolveSymbol(value)
+			action.Symbol = sym
+			hasSymbol = true
+		case "child_count":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return ExtractedAction{}, fmt.Errorf("reduce .child_count: %w", err)
+			}
+			action.ChildCount = n
+			hasChildCount = true
+		case "dynamic_precedence", "precedence", "prec":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				continue
+			}
+			action.Precedence = n
+		case "production_id":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				continue
+			}
+			action.ProductionID = n
+		}
+	}
+
+	if !hasSymbol || !hasChildCount {
+		return ExtractedAction{}, fmt.Errorf("reduce named args missing .symbol or .child_count")
+	}
 	return action, nil
 }
 

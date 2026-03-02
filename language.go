@@ -180,6 +180,13 @@ type Language struct {
 	ExternalScanner ExternalScanner
 	ExternalSymbols []Symbol // external token index -> symbol
 
+	// ExternalLexStates maps external lex state IDs (from LexMode.ExternalLexState)
+	// to a boolean slice indicating which external tokens are valid. Row 0 is
+	// always all-false (no external tokens valid). When non-nil, this table is
+	// used instead of parse-action-table probing to compute validSymbols for the
+	// external scanner, matching C tree-sitter's ts_external_scanner_states.
+	ExternalLexStates [][]bool
+
 	// InitialState is the parser's start state. In tree-sitter grammars
 	// this is always 1 (state 0 is reserved for error recovery). For
 	// hand-built grammars it defaults to 0.
@@ -188,6 +195,7 @@ type Language struct {
 	// Lazily-built lookup maps for O(1) name resolution.
 	symbolNameMap      map[string]Symbol
 	tokenSymbolNameMap map[string][]Symbol
+	publicSymbolMap    []Symbol // internal symbol → canonical public symbol
 	fieldNameMap       map[string]FieldID
 
 	symbolMapOnce sync.Once
@@ -234,10 +242,28 @@ func (l *Language) TokenSymbolsByName(name string) []Symbol {
 	return l.tokenSymbolNameMap[name]
 }
 
+// PublicSymbol maps an internal symbol to its canonical public form.
+// Multiple internal symbols may share the same visible name (e.g.
+// HTML's _start_tag_name and _end_tag_name both display as "tag_name").
+// PublicSymbol returns the first symbol with that name, matching what
+// SymbolByName returns. This ensures query patterns compiled with
+// SymbolByName match nodes regardless of which alias produced them.
+func (l *Language) PublicSymbol(sym Symbol) Symbol {
+	if l == nil {
+		return sym
+	}
+	l.buildSymbolMaps()
+	if int(sym) < len(l.publicSymbolMap) {
+		return l.publicSymbolMap[sym]
+	}
+	return sym
+}
+
 func (l *Language) buildSymbolMaps() {
 	l.symbolMapOnce.Do(func() {
 		l.symbolNameMap = make(map[string]Symbol, len(l.SymbolNames))
 		l.tokenSymbolNameMap = make(map[string][]Symbol)
+		l.publicSymbolMap = make([]Symbol, len(l.SymbolNames))
 
 		tokenCount := int(l.TokenCount)
 		if tokenCount > len(l.SymbolNames) {
@@ -245,14 +271,17 @@ func (l *Language) buildSymbolMaps() {
 		}
 
 		for i, sn := range l.SymbolNames {
+			sym := Symbol(i)
 			if sn == "" {
+				l.publicSymbolMap[i] = sym
 				continue
 			}
-			sym := Symbol(i)
 			// Keep the first match so duplicate names remain deterministic.
 			if _, exists := l.symbolNameMap[sn]; !exists {
 				l.symbolNameMap[sn] = sym
 			}
+			// Map each symbol to the canonical (first) symbol with its name.
+			l.publicSymbolMap[i] = l.symbolNameMap[sn]
 			if i < tokenCount {
 				l.tokenSymbolNameMap[sn] = append(l.tokenSymbolNameMap[sn], sym)
 			}

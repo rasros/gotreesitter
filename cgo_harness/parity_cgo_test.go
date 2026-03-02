@@ -30,6 +30,29 @@ type parityMeta struct {
 var paritySkips = map[string]parityMeta{
 	// Keep this map for explicitly known structural mismatches.
 	// Parse-support-specific skips (e.g. missing scanners) should not live here.
+	//
+	// Newly discovered from expanding parity to all 206 languages.
+	// These have real smoke samples but structural parse divergences.
+	"authzed":      {skipReason: "structural parse divergence (custom token source)"},
+	"desktop":      {skipReason: "structural parse divergence"},
+	"disassembly":  {skipReason: "structural parse divergence"},
+	"doxygen":      {skipReason: "structural parse divergence"},
+	"earthfile":    {skipReason: "structural parse divergence"},
+	"editorconfig": {skipReason: "structural parse divergence"},
+	"gdscript":     {skipReason: "structural parse divergence"},
+	"git_config":   {skipReason: "structural parse divergence"},
+	"gomod":        {skipReason: "structural parse divergence"},
+	"haxe":         {skipReason: "structural parse divergence"},
+	"hyprlang":     {skipReason: "structural parse divergence"},
+	"ledger":       {skipReason: "structural parse divergence"},
+	"matlab":       {skipReason: "structural parse divergence"},
+	"ninja":        {skipReason: "structural parse divergence"},
+	"prolog":       {skipReason: "structural parse divergence"},
+	"tlaplus":      {skipReason: "structural parse divergence"},
+	"todotxt":      {skipReason: "structural parse divergence (Go produces error nodes)"},
+	"uxntal":       {skipReason: "structural parse divergence"},
+	"vhdl":         {skipReason: "structural parse divergence"},
+	"vimdoc":       {skipReason: "structural parse divergence"},
 }
 
 type parityCase struct {
@@ -37,29 +60,64 @@ type parityCase struct {
 	source string
 }
 
-var parityCases = []parityCase{
-	{name: "bash", source: "echo hi\n"},
-	{name: "c", source: "int main(void) { return 0; }\n"},
-	{name: "cpp", source: "int main() { return 0; }\n"},
-	{name: "css", source: "body { color: red; }\n"},
-	{name: "elixir", source: "defmodule M do\n  def f(x), do: x + 1\nend\n"},
-	{name: "go", source: "package main\n\nfunc main() {\n\tprintln(1)\n}\n"},
-	{name: "html", source: "<html><body>Hello</body></html>\n"},
-	{name: "java", source: "class Main { int x; }\n"},
-	{name: "javascript", source: "function f() { return 1; }\nconst x = () => x + 1;\n"},
-	{name: "kotlin", source: "fun main() {\n    val x: Int? = null\n    println(x)\n}\n"},
-	{name: "lua", source: "local x = 1\n"},
-	{name: "php", source: "<?php echo 1;\n"},
-	{name: "python", source: "def f():\n    return 1\n"},
-	{name: "ruby", source: "def f\n  1\nend\n"},
-	{name: "rust", source: "fn main() { let x = 1; }\n"},
-	{name: "scala", source: "object Main { def f(x: Int): Int = x + 1 }\n"},
-	{name: "sql", source: "SELECT id, name FROM users WHERE id = 1;\n"},
-	{name: "swift", source: "func f() -> Int {\n  return 1\n}\n"},
-	{name: "toml", source: "a = 1\ntitle = \"hello\"\ntags = [\"x\", \"y\"]\n"},
-	{name: "tsx", source: "const x = <div/>;\n"},
-	{name: "typescript", source: "function f(): number { return 1; }\n"},
-	{name: "yaml", source: "a: 1\n"},
+// parityCases is built dynamically from the full language registry so that
+// every grammar with a smoke sample gets parity-tested against its C reference.
+// Languages without a C reference in languages.lock are skipped at test time.
+var parityCases = func() []parityCase {
+	var cases []parityCase
+	for _, entry := range grammars.AllLanguages() {
+		cases = append(cases, parityCase{
+			name:   entry.Name,
+			source: grammars.ParseSmokeSample(entry.Name),
+		})
+	}
+	return cases
+}()
+
+// hasDedicatedSample reports whether the language has a hand-written smoke
+// sample rather than the generic "x\n" fallback. Structural parity tests
+// should skip languages using the fallback since "x\n" is not valid syntax
+// for most grammars and produces meaningless tree comparisons.
+var hasDedicatedSample = func() map[string]bool {
+	m := make(map[string]bool, len(grammars.ParseSmokeSamples))
+	for name := range grammars.ParseSmokeSamples {
+		m[name] = true
+	}
+	return m
+}()
+
+// curatedLanguages is the hand-vetted correctness set that gates merges.
+// These languages produce structurally identical parse trees and identical
+// highlight captures between Go and C (except julia: 1 known gap tracked
+// in knownHighlightDivergence). Failures here are merge-blocking.
+var curatedLanguages = map[string]bool{
+	"bash":       true,
+	"c":         true,
+	"cpp":       true,
+	"css":       true,
+	"d":         true,
+	"elixir":    true,
+	"go":        true,
+	"html":      true,
+	"ini":       true,
+	"java":      true,
+	"javascript": true,
+	"julia":     true,
+	"kotlin":    true,
+	"lua":       true,
+	"make":      true,
+	"php":       true,
+	"python":    true,
+	"ruby":      true,
+	"rust":      true,
+	"scala":     true,
+	"scss":      true,
+	"sql":       true,
+	"swift":     true,
+	"toml":      true,
+	"tsx":       true,
+	"typescript": true,
+	"yaml":      true,
 }
 
 var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangEntry, map[string]grammars.ParseSupport) {
@@ -315,14 +373,16 @@ func parityReferenceSkipReason(err error) string {
 		return ""
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "ABI version") || strings.Contains(msg, "Incompatible language version") {
+	if strings.Contains(msg, "ABI version") || strings.Contains(msg, "Incompatible language version") ||
+		strings.Contains(msg, "undefined symbol") {
 		return msg
 	}
 	return ""
 }
 
 func normalizedSource(name, src string) []byte {
-	if name == "yaml" || name == "swift" {
+	switch name {
+	case "yaml", "swift", "ini", "make":
 		return []byte(src)
 	}
 	// Trim one trailing newline so both runtimes compare syntax tree shape
@@ -450,6 +510,9 @@ func safeEditSource(src []byte) ([]byte, int) {
 // on the currently CI-gated language set.
 func TestParityFreshParse(t *testing.T) {
 	for _, tc := range parityCases {
+		if !curatedLanguages[tc.name] {
+			continue
+		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {
@@ -464,6 +527,9 @@ func TestParityFreshParse(t *testing.T) {
 // matches a CGo fresh parse on edited source.
 func TestParityIncrementalParse(t *testing.T) {
 	for _, tc := range parityCases {
+		if !curatedLanguages[tc.name] {
+			continue
+		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {
@@ -623,6 +689,9 @@ func TestParityIncrementalParse(t *testing.T) {
 // do not produce error nodes.
 func TestParityHasNoErrors(t *testing.T) {
 	for _, tc := range parityCases {
+		if !curatedLanguages[tc.name] {
+			continue
+		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {

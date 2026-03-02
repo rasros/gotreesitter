@@ -20,10 +20,22 @@ import (
 // init() before any Language function is called.
 var externalScannerRegistry = map[string]gotreesitter.ExternalScanner{}
 
+// externalLexStatesRegistry maps language names to their external lex states
+// tables, matching C tree-sitter's ts_external_scanner_states. Populated by
+// zzz_scanner_attachments.go init() for grammars that need precise external
+// token validity filtering.
+var externalLexStatesRegistry = map[string][][]bool{}
+
 // RegisterExternalScanner registers an external scanner for a language name.
 // This is called during init() by zzz_scanner_attachments.go.
 func RegisterExternalScanner(name string, s gotreesitter.ExternalScanner) {
 	externalScannerRegistry[name] = s
+}
+
+// RegisterExternalLexStates registers the external lex states table for a
+// language, matching C tree-sitter's ts_external_scanner_states.
+func RegisterExternalLexStates(name string, states [][]bool) {
+	externalLexStatesRegistry[name] = states
 }
 
 type embeddedLanguageCacheEntry struct {
@@ -71,10 +83,13 @@ func loadEmbeddedLanguage(blobName string) *gotreesitter.Language {
 	entry.once.Do(func() {
 		entry.lang, entry.err = decodeEmbeddedLanguage(blobName)
 		if entry.err == nil {
-			// Attach external scanner if one is registered for this language.
+			// Attach external scanner and lex states if registered.
 			name := strings.TrimSuffix(blobName, ".bin")
 			if s, ok := externalScannerRegistry[name]; ok {
 				entry.lang.ExternalScanner = s
+			}
+			if els, ok := externalLexStatesRegistry[name]; ok {
+				entry.lang.ExternalLexStates = els
 			}
 		}
 	})

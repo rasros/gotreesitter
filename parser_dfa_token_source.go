@@ -16,6 +16,16 @@ type dfaTokenSource struct {
 	externalPayload   any
 	externalValid     []bool
 	glrStates         []StateID // all active GLR stack states
+
+	// Zero-width external token loop prevention.
+	// Tracks which external token indices have been produced as zero-width
+	// tokens at the current (position, state) pair, so they can be excluded
+	// from validSymbols on subsequent calls. This prevents infinite loops
+	// when the parser has no action for a zero-width external token and the
+	// state remains unchanged.
+	extZeroPos   int
+	extZeroState StateID
+	extZeroTried []bool
 }
 
 func (d *dfaTokenSource) Close() {
@@ -147,16 +157,70 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	if len(states) == 0 {
 		states = []StateID{d.state}
 	}
-	for _, st := range states {
-		for i, sym := range d.language.ExternalSymbols {
-			if !valid[i] && d.lookupActionIndex(st, sym) != 0 {
-				valid[i] = true
-				anyValid = true
+
+	if len(d.language.ExternalLexStates) > 0 {
+		// Use the precise external lex states table (matches C tree-sitter's
+		// ts_external_scanner_states). Each parser state maps to an external
+		// lex state ID via LexModes, and each external lex state ID maps to
+		// a boolean row indicating which external tokens are valid.
+		for _, st := range states {
+			if int(st) >= len(d.language.LexModes) {
+				continue
+			}
+			elsID := int(d.language.LexModes[st].ExternalLexState)
+			if elsID >= len(d.language.ExternalLexStates) {
+				continue
+			}
+			row := d.language.ExternalLexStates[elsID]
+			for i := range valid {
+				if i < len(row) && row[i] && !valid[i] {
+					valid[i] = true
+					anyValid = true
+				}
+			}
+		}
+	} else {
+		// Fallback: probe the parse action table for each external symbol.
+		// This is less precise than ExternalLexStates (may include error
+		// recovery actions) but works for grammars without the table.
+		for _, st := range states {
+			for i, sym := range d.language.ExternalSymbols {
+				if !valid[i] && d.lookupActionIndex(st, sym) != 0 {
+					valid[i] = true
+					anyValid = true
+				}
 			}
 		}
 	}
 	if !anyValid {
 		return Token{}, false
+	}
+
+	// Zero-width external token loop prevention: exclude external token
+	// indices that were already produced as zero-width tokens at this same
+	// (position, state) pair. When the parser has no action for a zero-width
+	// external token, it error-wraps it without changing state; the same
+	// scanner call would then produce the identical token infinitely.
+	// C tree-sitter avoids this via its ERROR_STATE lex mode which causes
+	// the scanner to bail out via the __error_recovery sentinel. The Go
+	// runtime instead tracks tried indices per (position, state).
+	if d.lexer.pos == d.extZeroPos && d.state == d.extZeroState && len(d.extZeroTried) > 0 {
+		for i := range valid {
+			if i < len(d.extZeroTried) && d.extZeroTried[i] {
+				valid[i] = false
+			}
+		}
+		// Recheck if anything is still valid.
+		anyValid = false
+		for _, v := range valid {
+			if v {
+				anyValid = true
+				break
+			}
+		}
+		if !anyValid {
+			return Token{}, false
+		}
 	}
 
 	if d.language.ExternalScanner == nil {
@@ -170,6 +234,35 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	tok, ok := el.token()
 	if !ok {
 		return Token{}, false
+	}
+
+	// Track zero-width tokens for loop prevention.
+	if tok.EndByte <= tok.StartByte {
+		if d.lexer.pos != d.extZeroPos || d.state != d.extZeroState {
+			// New position or state — reset the tried set.
+			d.extZeroPos = d.lexer.pos
+			d.extZeroState = d.state
+			if cap(d.extZeroTried) < len(d.language.ExternalSymbols) {
+				d.extZeroTried = make([]bool, len(d.language.ExternalSymbols))
+			} else {
+				d.extZeroTried = d.extZeroTried[:len(d.language.ExternalSymbols)]
+				for i := range d.extZeroTried {
+					d.extZeroTried[i] = false
+				}
+			}
+		}
+		// Mark the token index that produced this symbol.
+		for i, sym := range d.language.ExternalSymbols {
+			if sym == tok.Symbol {
+				if i < len(d.extZeroTried) {
+					d.extZeroTried[i] = true
+				}
+				break
+			}
+		}
+	} else {
+		// Non-zero-width token: reset the tried set since position advanced.
+		d.extZeroPos = -1
 	}
 
 	d.lexer.pos = int(tok.EndByte)
