@@ -3169,3 +3169,120 @@ func TestSelectAdjacentDoesNotFilterMatch(t *testing.T) {
 		t.Fatal("#select-adjacent! should not cause match rejection")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Multi-sibling grouping pattern tests
+// --------------------------------------------------------------------------
+
+func TestGroupingSingleElementUnchanged(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`((identifier) @name)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if q.PatternCount() != 1 {
+		t.Fatalf("PatternCount: got %d, want 1", q.PatternCount())
+	}
+	steps := q.patterns[0].steps
+	// Single-element group should NOT insert wildcard root.
+	if len(steps) != 1 {
+		t.Fatalf("steps: got %d, want 1 (no wildcard root for single element)", len(steps))
+	}
+	if steps[0].symbol != Symbol(1) {
+		t.Fatalf("symbol: got %d, want 1 (identifier)", steps[0].symbol)
+	}
+	if steps[0].depth != 0 {
+		t.Fatalf("depth: got %d, want 0", steps[0].depth)
+	}
+}
+
+func TestGroupingMultiSiblingInsertsWildcard(t *testing.T) {
+	lang := queryTestLanguage()
+	// Two siblings in a group — should insert wildcard root.
+	q, err := NewQuery(`((identifier) (number))`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if q.PatternCount() != 1 {
+		t.Fatalf("PatternCount: got %d, want 1", q.PatternCount())
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 3 {
+		t.Fatalf("steps: got %d, want 3 (wildcard + identifier + number)", len(steps))
+	}
+	// Step 0: wildcard root at depth 0.
+	if steps[0].symbol != 0 || steps[0].isNamed {
+		t.Fatalf("step 0: got symbol=%d isNamed=%v, want wildcard (0, false)", steps[0].symbol, steps[0].isNamed)
+	}
+	if steps[0].depth != 0 {
+		t.Fatalf("step 0 depth: got %d, want 0", steps[0].depth)
+	}
+	// Step 1: identifier at depth 1.
+	if steps[1].symbol != Symbol(1) {
+		t.Fatalf("step 1 symbol: got %d, want 1 (identifier)", steps[1].symbol)
+	}
+	if steps[1].depth != 1 {
+		t.Fatalf("step 1 depth: got %d, want 1", steps[1].depth)
+	}
+	// Step 2: number at depth 1.
+	if steps[2].symbol != Symbol(2) {
+		t.Fatalf("step 2 symbol: got %d, want 2 (number)", steps[2].symbol)
+	}
+	if steps[2].depth != 1 {
+		t.Fatalf("step 2 depth: got %d, want 1", steps[2].depth)
+	}
+}
+
+func TestGroupingMultiSiblingWithCaptures(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`((identifier) @id (number) @num)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 3 {
+		t.Fatalf("steps: got %d, want 3", len(steps))
+	}
+	// Verify wildcard root.
+	if steps[0].symbol != 0 {
+		t.Fatalf("step 0 symbol: got %d, want 0 (wildcard)", steps[0].symbol)
+	}
+	// Verify captures.
+	if steps[1].captureID < 0 {
+		t.Fatal("step 1: expected capture on identifier")
+	}
+	if steps[2].captureID < 0 {
+		t.Fatal("step 2: expected capture on number")
+	}
+}
+
+func TestGroupingTripleParens(t *testing.T) {
+	lang := queryTestLanguage()
+	// Triple parens like git_rebase uses: (((a) @cap (b) @cap2) (#set! ...))
+	q, err := NewQuery(`(((identifier) @id (number) @num) (#set! "priority" 100))`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if q.PatternCount() != 1 {
+		t.Fatalf("PatternCount: got %d, want 1", q.PatternCount())
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 3 {
+		t.Fatalf("steps: got %d, want 3", len(steps))
+	}
+	// Wildcard root at depth 0.
+	if steps[0].symbol != 0 {
+		t.Fatalf("step 0 symbol: got %d, want 0 (wildcard)", steps[0].symbol)
+	}
+	if steps[0].depth != 0 {
+		t.Fatalf("step 0 depth: got %d, want 0", steps[0].depth)
+	}
+	// Captures present.
+	if steps[1].captureID < 0 || steps[2].captureID < 0 {
+		t.Fatal("expected captures on both children")
+	}
+	// Predicate present.
+	if len(q.patterns[0].predicates) != 1 {
+		t.Fatalf("predicates: got %d, want 1", len(q.patterns[0].predicates))
+	}
+}

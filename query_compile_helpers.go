@@ -233,6 +233,29 @@ func (p *queryParser) addCaptureToAlternative(alt *alternativeSymbol, captureID 
 	alt.captureIDs = append(alt.captureIDs, captureID)
 }
 
+// peekNextIsPatternElement checks whether the next non-whitespace token
+// starts a new pattern element (child or sibling pattern), as opposed to
+// a capture (@), predicate (#), close paren, or negation (!).
+func (p *queryParser) peekNextIsPatternElement() bool {
+	saved := p.pos
+	defer func() { p.pos = saved }()
+	p.skipWhitespaceAndComments()
+	if p.pos >= len(p.input) {
+		return false
+	}
+	ch := p.input[p.pos]
+	switch {
+	case ch == '(':
+		return p.pos+1 < len(p.input) && p.input[p.pos+1] != '#'
+	case ch == '[', ch == '"', ch == '.':
+		return true
+	case isIdentStart(ch):
+		return true
+	default:
+		return false
+	}
+}
+
 // isIdentStart reports whether a byte can start an identifier.
 func isIdentStart(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'

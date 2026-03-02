@@ -145,9 +145,26 @@ func (p *queryParser) parsePattern(depth int, parentSymbolHint Symbol) (*Pattern
 		if len(innerPat.steps) == 0 {
 			return nil, fmt.Errorf("query: empty grouped pattern at position %d", p.pos)
 		}
-		pat.steps = append(pat.steps, innerPat.steps...)
+
+		if p.peekNextIsPatternElement() {
+			// Multi-sibling group: ((a) (b) ...) — insert wildcard root.
+			pat.steps = append(pat.steps, QueryStep{
+				symbol:    0,
+				isNamed:   false,
+				captureID: -1,
+				depth:     depth,
+			})
+			rootIdx = 0
+			for i := range innerPat.steps {
+				innerPat.steps[i].depth++
+			}
+			pat.steps = append(pat.steps, innerPat.steps...)
+		} else {
+			// Single-element group: ((a) @cap (#pred)) — unchanged.
+			pat.steps = append(pat.steps, innerPat.steps...)
+			rootIdx = 0
+		}
 		pat.predicates = append(pat.predicates, innerPat.predicates...)
-		rootIdx = 0
 
 	default:
 		return nil, fmt.Errorf("query: expected node type after '(' at position %d: query: expected identifier at position %d", p.pos, p.pos)

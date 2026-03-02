@@ -13,10 +13,9 @@ var highlightNoRangesExpected = map[string]bool{
 	// These produce raw query matches but the Highlighter API returns 0 ranges.
 	// Typically due to predicate filtering, tokenization gaps, or injection
 	// requirements in the highlight query.
-	"cpp":        true, // C++ highlight query requires predicate support beyond current Highlighter
-	"git_rebase": true, // git-rebase highlights use node types not produced by DFA parser
-	"mermaid":    true, // mermaid highlights require specific node nesting not matched
-	"org":        true, // org-mode highlights depend on injection/predicate features
+	"cpp":     true, // C++ highlight query requires predicate support beyond current Highlighter
+	"mermaid": true, // mermaid highlights require specific node nesting not matched
+	"org":     true, // org-mode highlights depend on injection/predicate features
 }
 
 func TestAllHighlightQueriesCompile(t *testing.T) {
