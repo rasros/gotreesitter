@@ -952,6 +952,56 @@ func TestCaptureDeduplicated(t *testing.T) {
 	}
 }
 
+func TestQueryMetadataAccessors(t *testing.T) {
+	lang := queryTestLanguage()
+	src := `(identifier) @id
+(#eq? @id "main")
+`
+	q, err := NewQuery(src, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	if got, want := q.CaptureCount(), uint32(1); got != want {
+		t.Fatalf("CaptureCount: got %d want %d", got, want)
+	}
+	if name, ok := q.CaptureNameForID(0); !ok || name != "id" {
+		t.Fatalf("CaptureNameForID(0): got (%q,%v), want (%q,true)", name, ok, "id")
+	}
+	if _, ok := q.CaptureNameForID(99); ok {
+		t.Fatal("CaptureNameForID(99): ok=true, want false")
+	}
+
+	if got, want := q.StringCount(), uint32(1); got != want {
+		t.Fatalf("StringCount: got %d want %d", got, want)
+	}
+	if s, ok := q.StringValueForID(0); !ok || s != "main" {
+		t.Fatalf("StringValueForID(0): got (%q,%v), want (%q,true)", s, ok, "main")
+	}
+	if _, ok := q.StringValueForID(99); ok {
+		t.Fatal("StringValueForID(99): ok=true, want false")
+	}
+
+	start, ok := q.StartByteForPattern(0)
+	if !ok {
+		t.Fatal("StartByteForPattern(0): ok=false")
+	}
+	end, ok := q.EndByteForPattern(0)
+	if !ok {
+		t.Fatal("EndByteForPattern(0): ok=false")
+	}
+	if end <= start {
+		t.Fatalf("pattern byte range invalid: start=%d end=%d", start, end)
+	}
+	preds, ok := q.PredicatesForPattern(0)
+	if !ok {
+		t.Fatal("PredicatesForPattern(0): ok=false")
+	}
+	if len(preds) != 1 {
+		t.Fatalf("PredicatesForPattern len: got %d want 1", len(preds))
+	}
+}
+
 func TestQueryPatternMetadata(t *testing.T) {
 	lang := queryTestLanguage()
 

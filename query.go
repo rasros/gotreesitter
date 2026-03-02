@@ -12,6 +12,7 @@ import (
 type Query struct {
 	patterns []Pattern
 	captures []string // capture name by index
+	strings  []string // string literals by index
 
 	rootCandidatesBySymbol map[Symbol][]int
 	rootCandidatesDense    [][]int
@@ -23,6 +24,8 @@ type Query struct {
 
 // Pattern is a single top-level S-expression pattern in a query.
 type Pattern struct {
+	startByte  uint32
+	endByte    uint32
 	steps      []QueryStep
 	predicates []QueryPredicate
 }
@@ -643,9 +646,83 @@ func (q *Query) PatternCount() int {
 	return len(q.patterns)
 }
 
+// CaptureCount returns the number of unique capture names in this query.
+func (q *Query) CaptureCount() uint32 {
+	if q == nil {
+		return 0
+	}
+	return uint32(len(q.captures))
+}
+
 // CaptureNames returns the list of unique capture names used in the query.
 func (q *Query) CaptureNames() []string {
 	return q.captures
+}
+
+// CaptureNameForID returns the capture name for the given capture id.
+func (q *Query) CaptureNameForID(id uint32) (string, bool) {
+	if q == nil || int(id) >= len(q.captures) {
+		return "", false
+	}
+	return q.captures[id], true
+}
+
+// StringCount returns the number of unique string literals in this query.
+func (q *Query) StringCount() uint32 {
+	if q == nil {
+		return 0
+	}
+	return uint32(len(q.strings))
+}
+
+// StringValueForID returns the string literal for the given string id.
+func (q *Query) StringValueForID(id uint32) (string, bool) {
+	if q == nil || int(id) >= len(q.strings) {
+		return "", false
+	}
+	return q.strings[id], true
+}
+
+// StartByteForPattern returns the query-source start byte for patternIndex.
+func (q *Query) StartByteForPattern(patternIndex uint32) (uint32, bool) {
+	if q == nil {
+		return 0, false
+	}
+	idx := int(patternIndex)
+	if idx < 0 || idx >= len(q.patterns) {
+		return 0, false
+	}
+	return q.patterns[idx].startByte, true
+}
+
+// EndByteForPattern returns the query-source end byte for patternIndex.
+func (q *Query) EndByteForPattern(patternIndex uint32) (uint32, bool) {
+	if q == nil {
+		return 0, false
+	}
+	idx := int(patternIndex)
+	if idx < 0 || idx >= len(q.patterns) {
+		return 0, false
+	}
+	return q.patterns[idx].endByte, true
+}
+
+// PredicatesForPattern returns a copy of predicates attached to patternIndex.
+func (q *Query) PredicatesForPattern(patternIndex uint32) ([]QueryPredicate, bool) {
+	if q == nil {
+		return nil, false
+	}
+	idx := int(patternIndex)
+	if idx < 0 || idx >= len(q.patterns) {
+		return nil, false
+	}
+	preds := q.patterns[idx].predicates
+	if len(preds) == 0 {
+		return nil, true
+	}
+	out := make([]QueryPredicate, len(preds))
+	copy(out, preds)
+	return out, true
 }
 
 // IsPatternRooted reports whether the pattern has exactly one root step at

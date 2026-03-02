@@ -74,7 +74,9 @@ func (p *queryParser) readString() (string, error) {
 		}
 		if ch == '"' {
 			p.pos++ // consume closing '"'
-			return sb.String(), nil
+			out := sb.String()
+			p.ensureString(out)
+			return out, nil
 		}
 		sb.WriteByte(ch)
 		p.pos++
@@ -202,6 +204,18 @@ func (p *queryParser) ensureCapture(name string) int {
 	}
 	idx := len(p.q.captures)
 	p.q.captures = append(p.q.captures, name)
+	return idx
+}
+
+// ensureString returns the index for a string literal, adding it if new.
+func (p *queryParser) ensureString(value string) int {
+	for i, s := range p.q.strings {
+		if s == value {
+			return i
+		}
+	}
+	idx := len(p.q.strings)
+	p.q.strings = append(p.q.strings, value)
 	return idx
 }
 

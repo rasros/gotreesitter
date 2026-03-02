@@ -30,6 +30,7 @@ func (p *queryParser) parse() error {
 			}
 			last := &p.q.patterns[len(p.q.patterns)-1]
 			last.predicates = append(last.predicates, pred)
+			last.endByte = uint32(p.pos)
 			if err := p.validatePatternPredicates(last); err != nil {
 				return err
 			}
@@ -39,34 +40,46 @@ func (p *queryParser) parse() error {
 		switch {
 		case ch == '(':
 			// A top-level pattern.
+			startByte := uint32(p.pos)
 			pat, err := p.parsePattern(0, 0)
 			if err != nil {
 				return err
 			}
+			pat.startByte = startByte
+			pat.endByte = uint32(p.pos)
 			p.q.patterns = append(p.q.patterns, *pat)
 
 		case ch == '[':
 			// Top-level alternation: ["func" "return"] @keyword
+			startByte := uint32(p.pos)
 			pat, err := p.parseAlternationPattern(0, 0)
 			if err != nil {
 				return err
 			}
+			pat.startByte = startByte
+			pat.endByte = uint32(p.pos)
 			p.q.patterns = append(p.q.patterns, *pat)
 
 		case ch == '"':
 			// Top-level string match: "func" @keyword
+			startByte := uint32(p.pos)
 			pat, err := p.parseStringPattern(0)
 			if err != nil {
 				return err
 			}
+			pat.startByte = startByte
+			pat.endByte = uint32(p.pos)
 			p.q.patterns = append(p.q.patterns, *pat)
 
 		case isIdentStart(ch):
 			// Top-level field shorthand: field: (pattern)
+			startByte := uint32(p.pos)
 			pat, err := p.parseFieldShorthandPattern(0)
 			if err != nil {
 				return err
 			}
+			pat.startByte = startByte
+			pat.endByte = uint32(p.pos)
 			p.q.patterns = append(p.q.patterns, *pat)
 
 		case ch == '.':
