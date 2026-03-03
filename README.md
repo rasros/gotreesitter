@@ -217,7 +217,7 @@ cpu: Intel(R) Core(TM) Ultra 9 285
 
 On this workload:
 
-- Full parse is ~2.0x slower than native C — within striking distance of the CGo overhead alone (1.76 → ~2.0 ms).
+- Full parse is ~2.0x slower than native C.
 - Incremental single-byte edits are ~41.6x faster than native C (~52.8x faster than CGo).
 - No-edit reparses are ~45,800x faster than native C, zero allocations.
 
@@ -317,7 +317,7 @@ All shipped highlight and tags queries compile (`156/156` highlight, `69/69` tag
 
 ## Known limitations
 
-- **Full-parse throughput**: ~2.0x slower than the C runtime on cold full parses (the 500-function Go benchmark). This gap is close to the CGo overhead floor (~1.76 ms native C → ~2.0 ms CGo). Incremental reparsing — the dominant operation in editor workloads — is 42x faster.
+- **Full-parse throughput**: ~2.0x slower than the C runtime on cold full parses (the 500-function Go benchmark). Incremental reparsing — the dominant operation in editor workloads — is 42x faster.
 - **GLR safety caps**: The parser enforces iteration, stack depth, and node count limits proportional to input size. These prevent pathological blowup on grammars with high ambiguity but impose a ceiling on the maximum input complexity that parses without error. The caps are tunable but not removable without risking unbounded resource consumption.
 - **Degraded grammars**: 3 of 206 grammars are currently degraded: `disassembly`, `norg`, and `vimdoc`. Check `entry.Quality` and `tree.RootNode().HasError()`.
 
