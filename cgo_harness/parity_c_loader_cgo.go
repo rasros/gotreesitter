@@ -43,6 +43,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -213,19 +214,30 @@ func loadParityLock(path string) (map[string]parityLockEntry, error) {
 }
 
 func clonePinnedRepo(repoURL, commit, dest string) error {
-	if err := runCommand("", "git", "clone", "--depth=1", repoURL, dest); err != nil {
+	if err := runCommandRetry("", 4, "git", "clone", "--depth=1", repoURL, dest); err != nil {
+		// Fallback to a full clone if shallow clone repeatedly fails with a
+		// transient GitHub transport error.
+		if retryableCommandError(err) {
+			if fullErr := runCommandRetry("", 2, "git", "clone", repoURL, dest); fullErr == nil {
+				goto checkout
+			} else {
+				return fullErr
+			}
+		}
 		return err
 	}
+
+checkout:
 	if commit == "" {
 		return nil
 	}
 	if err := runCommand("", "git", "-C", dest, "checkout", "--detach", commit); err == nil {
 		return nil
 	}
-	if err := runCommand("", "git", "-C", dest, "fetch", "--depth=1", "origin", commit); err != nil {
+	if err := runCommandRetry("", 4, "git", "-C", dest, "fetch", "--depth=1", "origin", commit); err != nil {
 		return err
 	}
-	return runCommand("", "git", "-C", dest, "checkout", "--detach", "FETCH_HEAD")
+	return runCommandRetry("", 2, "git", "-C", dest, "checkout", "--detach", "FETCH_HEAD")
 }
 
 func compileParserShared(entry parityLockEntry, repoDir, outSO, objDir string) error {
@@ -453,6 +465,13 @@ func parityDLError() string {
 func runCommand(dir, cmdName string, args ...string) error {
 	cmd := exec.Command(cmdName, args...)
 	cmd.Dir = dir
+	if cmdName == "git" {
+		cmd.Env = append(
+			os.Environ(),
+			"GIT_HTTP_VERSION=HTTP/1.1",
+			"GIT_TERMINAL_PROMPT=0",
+		)
+	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -462,6 +481,38 @@ func runCommand(dir, cmdName string, args ...string) error {
 		msg = err.Error()
 	}
 	return fmt.Errorf("%s %s: %s", cmdName, strings.Join(args, " "), msg)
+}
+
+func runCommandRetry(dir string, attempts int, cmdName string, args ...string) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		err := runCommand(dir, cmdName, args...)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retryableCommandError(err) || i == attempts-1 {
+			break
+		}
+		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+	}
+	return lastErr
+}
+
+func retryableCommandError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "The requested URL returned error: 500") ||
+		strings.Contains(msg, "remote: Internal Server Error") ||
+		strings.Contains(msg, "expected flush after ref listing") ||
+		strings.Contains(msg, "expected 'packfile'") ||
+		strings.Contains(msg, "Connection reset by peer") ||
+		strings.Contains(msg, "connection reset by peer")
 }
 
 func findParserC(repoDir string) (string, error) {
