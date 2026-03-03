@@ -220,38 +220,16 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 		return nil, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
-	ts := &dfaTokenSource{
-		lexer:             lexer,
-		language:          p.language,
-		lookupActionIndex: p.lookupActionIndex,
-		hasKeywordState:   p.hasKeywordState,
-	}
-	if p.language.ExternalScanner != nil {
-		ts.externalPayload = p.language.ExternalScanner.Create()
-	}
+	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, false)
 	if parseMaxGLRStacksValue() < fullParseRetryMaxGLRStacks && shouldRetryFullParse(tree) {
 		retryLexer := NewLexer(p.language.LexStates, source)
-		retryTS := &dfaTokenSource{
-			lexer:             retryLexer,
-			language:          p.language,
-			lookupActionIndex: p.lookupActionIndex,
-			hasKeywordState:   p.hasKeywordState,
-		}
-		if p.language.ExternalScanner != nil {
-			retryTS.externalPayload = p.language.ExternalScanner.Create()
-		}
+		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, false)
 	}
 	if p.language.ExternalScanner != nil && shouldRetryFullParse(tree) {
 		retryLexer := NewLexer(p.language.LexStates, source)
-		retryTS := &dfaTokenSource{
-			lexer:             retryLexer,
-			language:          p.language,
-			lookupActionIndex: p.lookupActionIndex,
-			hasKeywordState:   p.hasKeywordState,
-		}
-		retryTS.externalPayload = p.language.ExternalScanner.Create()
+		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, true)
 	}
 	return tree, nil
@@ -294,15 +272,7 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
 		return nil, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
-	ts := &dfaTokenSource{
-		lexer:             lexer,
-		language:          p.language,
-		lookupActionIndex: p.lookupActionIndex,
-		hasKeywordState:   p.hasKeywordState,
-	}
-	if p.language.ExternalScanner != nil {
-		ts.externalPayload = p.language.ExternalScanner.Create()
-	}
+	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	return p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil), nil
 }
 
@@ -331,15 +301,7 @@ func (p *Parser) ParseIncrementalProfiled(source []byte, oldTree *Tree) (*Tree, 
 		return nil, IncrementalParseProfile{}, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
-	ts := &dfaTokenSource{
-		lexer:             lexer,
-		language:          p.language,
-		lookupActionIndex: p.lookupActionIndex,
-		hasKeywordState:   p.hasKeywordState,
-	}
-	if p.language.ExternalScanner != nil {
-		ts.externalPayload = p.language.ExternalScanner.Create()
-	}
+	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	timing := &incrementalParseTiming{}
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), timing)
 	return tree, timing.toProfile(), nil

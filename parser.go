@@ -330,7 +330,9 @@ func (p *Parser) logf(kind ParserLogType, format string, args ...any) {
 // merged; distinct alternatives are preserved.
 func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor, oldTree *Tree, arenaClass arenaClass, timing *incrementalParseTiming, maxStacksOverride int, deterministicExternalConflicts bool) *Tree {
 	parseStart := time.Now()
-	p.logf(ParserLogParse, "start len=%d incremental=%t", len(source), reuse != nil || oldTree != nil)
+	if p.logger != nil {
+		p.logf(ParserLogParse, "start len=%d incremental=%t", len(source), reuse != nil || oldTree != nil)
+	}
 	deferParentLinks := reuse == nil && oldTree == nil
 	if closer, ok := ts.(interface{ Close() }); ok {
 		defer closer.Close()
@@ -409,14 +411,16 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		if tree != nil {
 			tree.setParseRuntime(parseRuntime)
 		}
-		p.logf(
-			ParserLogParse,
-			"stop reason=%s truncated=%t tokens=%d max_stacks=%d",
-			parseRuntime.StopReason,
-			parseRuntime.Truncated,
-			parseRuntime.TokensConsumed,
-			parseRuntime.MaxStacksSeen,
-		)
+		if p.logger != nil {
+			p.logf(
+				ParserLogParse,
+				"stop reason=%s truncated=%t tokens=%d max_stacks=%d",
+				parseRuntime.StopReason,
+				parseRuntime.Truncated,
+				parseRuntime.TokensConsumed,
+				parseRuntime.MaxStacksSeen,
+			)
+		}
 		return tree
 	}
 	finalize := func(stacks []glrStack, stopReason ParseStopReason) *Tree {

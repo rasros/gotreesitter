@@ -84,6 +84,15 @@ func (s *includedRangeTokenSource) SupportsIncrementalReuse() bool {
 	return false
 }
 
+func (s *includedRangeTokenSource) Close() {
+	if s == nil || s.base == nil {
+		return
+	}
+	if closer, ok := s.base.(interface{ Close() }); ok {
+		closer.Close()
+	}
+}
+
 func (s *includedRangeTokenSource) Next() Token {
 	return s.filterToken(Token{}, false)
 }

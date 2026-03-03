@@ -2,6 +2,7 @@ package gotreesitter
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 )
@@ -38,12 +39,67 @@ type dfaTokenSource struct {
 const maxConsecutiveZeroWidthTokens = 4
 const maxConsecutiveZeroWidthTokensExternal = 128
 
+var dfaTokenSourcePool = sync.Pool{
+	New: func() any {
+		return &dfaTokenSource{
+			extZeroPos:   -1,
+			zeroWidthPos: -1,
+		}
+	},
+}
+
+func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool) *dfaTokenSource {
+	ts := dfaTokenSourcePool.Get().(*dfaTokenSource)
+	ts.lexer = lexer
+	ts.language = language
+	ts.state = 0
+	ts.lookupActionIndex = lookupActionIndex
+	ts.hasKeywordState = hasKeywordState
+	ts.externalPayload = nil
+	ts.glrStates = nil
+	if len(ts.externalValid) > 0 {
+		ts.externalValid = ts.externalValid[:0]
+	}
+	ts.extZeroPos = -1
+	ts.extZeroState = 0
+	if len(ts.extZeroTried) > 0 {
+		ts.extZeroTried = ts.extZeroTried[:0]
+	}
+	ts.zeroWidthPos = -1
+	ts.zeroWidthCount = 0
+	if language != nil && language.ExternalScanner != nil {
+		ts.externalPayload = language.ExternalScanner.Create()
+	}
+	return ts
+}
+
 func (d *dfaTokenSource) Close() {
 	if d.language == nil || d.language.ExternalScanner == nil || d.externalPayload == nil {
+		// still recycle the token source instance
+		d.lexer = nil
+		d.language = nil
+		d.lookupActionIndex = nil
+		d.hasKeywordState = nil
+		d.glrStates = nil
+		d.extZeroPos = -1
+		d.extZeroState = 0
+		d.zeroWidthPos = -1
+		d.zeroWidthCount = 0
+		dfaTokenSourcePool.Put(d)
 		return
 	}
 	d.language.ExternalScanner.Destroy(d.externalPayload)
 	d.externalPayload = nil
+	d.lexer = nil
+	d.language = nil
+	d.lookupActionIndex = nil
+	d.hasKeywordState = nil
+	d.glrStates = nil
+	d.extZeroPos = -1
+	d.extZeroState = 0
+	d.zeroWidthPos = -1
+	d.zeroWidthCount = 0
+	dfaTokenSourcePool.Put(d)
 }
 
 // DebugDFA enables trace logging for DFA token production.
