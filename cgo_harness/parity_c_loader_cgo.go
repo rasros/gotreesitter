@@ -393,13 +393,33 @@ func regenerateParserSource(repoDir, hintDir string) error {
 		return err
 	}
 
-	abi := strconv.Itoa(parityGenerateABI)
+	abis := make([]int, 0, parityMaxLanguageVersion-parityMinLanguageVersion+1)
+	for abi := parityGenerateABI; abi >= parityMinLanguageVersion; abi-- {
+		abis = append(abis, abi)
+	}
+
+	tryGenerate := func(cmd string, args ...string) error {
+		var lastErr error
+		for _, abi := range abis {
+			abiArgs := append(args, "--abi", strconv.Itoa(abi))
+			if err := runCommand(grammarRoot, cmd, abiArgs...); err == nil {
+				return nil
+			} else {
+				lastErr = err
+			}
+		}
+		if lastErr == nil {
+			return fmt.Errorf("all ABI attempts failed")
+		}
+		return fmt.Errorf("all ABI attempts failed; last error: %w", lastErr)
+	}
+
 	if _, err := exec.LookPath("tree-sitter"); err == nil {
-		if err := runCommand(grammarRoot, "tree-sitter", "generate", "--abi", abi); err == nil {
+		if err := tryGenerate("tree-sitter", "generate"); err == nil {
 			return nil
 		}
 	}
-	return runCommand(grammarRoot, "npx", "--yes", "tree-sitter-cli", "generate", "--abi", abi)
+	return tryGenerate("npx", "--yes", "tree-sitter-cli", "generate")
 }
 
 func findGrammarRoot(repoDir, hintDir string) (string, error) {
@@ -530,7 +550,11 @@ func runCommandRetry(dir string, attempts int, cmdName string, args ...string) e
 		if !retryableCommandError(err) || i == attempts-1 {
 			break
 		}
-		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+		delay := time.Duration(i+1) * time.Second
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
+		}
+		time.Sleep(delay)
 	}
 	return lastErr
 }
@@ -544,6 +568,12 @@ func retryableCommandError(err error) bool {
 		strings.Contains(msg, "remote: Internal Server Error") ||
 		strings.Contains(msg, "expected flush after ref listing") ||
 		strings.Contains(msg, "expected 'packfile'") ||
+		strings.Contains(msg, "Could not resolve host") ||
+		strings.Contains(msg, "Temporary failure in name resolution") ||
+		strings.Contains(msg, "Name or service not known") ||
+		strings.Contains(msg, "TLS handshake timeout") ||
+		strings.Contains(msg, "operation timed out") ||
+		strings.Contains(msg, "Operation timed out") ||
 		strings.Contains(msg, "Connection reset by peer") ||
 		strings.Contains(msg, "connection reset by peer")
 }
