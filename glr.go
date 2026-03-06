@@ -47,10 +47,13 @@ const (
 	// Hard cap on concurrently retained GLR stacks in parseInternal.
 	// Kept intentionally tight for parse speed. Full parses that stop with no
 	// live stacks can retry once at a higher cap.
-	maxGLRStacks = 2
+	maxGLRStacks = 8
 	// Per-merge-key survivor cap. Tuned below 8 to reduce full-parse GLR churn
 	// while keeping corpus parity and correctness gates green.
 	maxStacksPerMergeKey = 6
+	// Retry parses can temporarily widen the merge fanout beyond the default
+	// survivor cap without changing the steady-state parser behavior.
+	maxStacksPerMergeKeyCeiling = 24
 )
 
 type glrMergeScratch struct {
@@ -66,8 +69,8 @@ type glrMergeKey struct {
 
 type glrMergeSlot struct {
 	key        glrMergeKey
-	indices    [maxStacksPerMergeKey]int
-	hashes     [maxStacksPerMergeKey]uint64
+	indices    [maxStacksPerMergeKeyCeiling]int
+	hashes     [maxStacksPerMergeKeyCeiling]uint64
 	hashMask   uint64
 	count      int
 	worstIndex int
@@ -417,9 +420,6 @@ func gssStackEntriesEqual(gss gssStack, entries []stackEntry) bool {
 }
 
 func stackEntryNodesEquivalent(a, b *Node) bool {
-	// Keep this comparator shallow-ish by design: full recursive tree equality in
-	// merge hot paths is too expensive, and GSS hash/state/offset bucketing already
-	// narrows candidates before this check runs.
 	if a == b {
 		return true
 	}
@@ -493,16 +493,19 @@ func stackComparePtr(a, b *glrStack) int {
 		}
 		return -1
 	}
-	aDepth := a.depth()
-	bDepth := b.depth()
-	if aDepth != bDepth {
-		if aDepth > bDepth {
+	// When re-processing the current token after GLR reductions, unshifted
+	// stacks are the only branches that can still make progress on that
+	// lookahead. Prefer keeping them before depth/offset tie-breakers.
+	if a.shifted != b.shifted {
+		if !a.shifted {
 			return 1
 		}
 		return -1
 	}
-	if a.shifted != b.shifted {
-		if !a.shifted {
+	aDepth := a.depth()
+	bDepth := b.depth()
+	if aDepth != bDepth {
+		if aDepth > bDepth {
 			return 1
 		}
 		return -1
@@ -539,16 +542,18 @@ func stackCompareMerge(a, b *glrStack) int {
 		}
 		return -1
 	}
-	aDepth := a.depth()
-	bDepth := b.depth()
-	if aDepth != bDepth {
-		if aDepth > bDepth {
+	// See stackComparePtr: keep current-token work alive before preferring
+	// deeper stacks that already shifted the lookahead.
+	if a.shifted != b.shifted {
+		if !a.shifted {
 			return 1
 		}
 		return -1
 	}
-	if a.shifted != b.shifted {
-		if !a.shifted {
+	aDepth := a.depth()
+	bDepth := b.depth()
+	if aDepth != bDepth {
+		if aDepth > bDepth {
 			return 1
 		}
 		return -1
@@ -621,8 +626,14 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 	}
 
 	perKeyCap := maxStacksPerMergeKey
-	if scratch.perKeyCap > 0 && scratch.perKeyCap < perKeyCap {
+	if scratch.perKeyCap > 0 {
 		perKeyCap = scratch.perKeyCap
+	}
+	if perKeyCap < 1 {
+		perKeyCap = 1
+	}
+	if perKeyCap > maxStacksPerMergeKeyCeiling {
+		perKeyCap = maxStacksPerMergeKeyCeiling
 	}
 
 	// Merge exact duplicates and keep a bounded number of distinct

@@ -1001,18 +1001,83 @@ func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 	if len(stacks) <= keep {
 		return stacks
 	}
-	for i := 0; i < keep; i++ {
+
+	// Preserve one strong representative per top state before filling the
+	// remaining cap. Otherwise a burst of near-duplicate stacks from one state
+	// can crowd out a shallower but semantically distinct branch.
+	selected := make([]int, 0, len(stacks))
+	for i := range stacks {
+		state := stacks[i].top().state
+		seen := false
+		for j := 0; j < i; j++ {
+			if stacks[j].top().state == state {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
 		best := i
 		for j := i + 1; j < len(stacks); j++ {
+			if stacks[j].top().state != state {
+				continue
+			}
 			if stackComparePtr(&stacks[j], &stacks[best]) > 0 {
 				best = j
 			}
 		}
+		selected = append(selected, best)
+	}
+	for i := 0; i < len(selected); i++ {
+		best := i
+		for j := i + 1; j < len(selected); j++ {
+			if stackComparePtr(&stacks[selected[j]], &stacks[selected[best]]) > 0 {
+				best = j
+			}
+		}
 		if best != i {
-			stacks[i], stacks[best] = stacks[best], stacks[i]
+			selected[i], selected[best] = selected[best], selected[i]
 		}
 	}
-	return stacks[:keep]
+	if len(selected) > keep {
+		selected = selected[:keep]
+	}
+
+	chosen := make([]bool, len(stacks))
+	for _, idx := range selected {
+		chosen[idx] = true
+	}
+	for len(selected) < keep {
+		best := -1
+		for i := range stacks {
+			if chosen[i] {
+				continue
+			}
+			if best < 0 || stackComparePtr(&stacks[i], &stacks[best]) > 0 {
+				best = i
+			}
+		}
+		if best < 0 {
+			break
+		}
+		chosen[best] = true
+		selected = append(selected, best)
+	}
+	for i := 0; i < len(selected); i++ {
+		idx := selected[i]
+		if idx == i {
+			continue
+		}
+		stacks[i], stacks[idx] = stacks[idx], stacks[i]
+		for j := i + 1; j < len(selected); j++ {
+			if selected[j] == i {
+				selected[j] = idx
+				break
+			}
+		}
+	}
+	return stacks[:len(selected)]
 }
 
 func classifyConflictShape(actions []ParseAction) (rrConflict, rsConflict bool) {

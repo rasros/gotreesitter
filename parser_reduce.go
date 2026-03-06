@@ -533,7 +533,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		}
 	}
 
-	rawFieldIDs := p.buildFieldIDs(childCount, productionID, arena)
+	rawFieldIDs, rawInherited := p.buildFieldIDs(childCount, productionID, arena)
 	children := arena.allocNodeSlice(normalizedCount)
 	var fieldIDs []FieldID
 	if rawFieldIDs != nil {
@@ -548,9 +548,13 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			continue
 		}
 		var fid FieldID
+		inherited := false
 		if !n.isExtra {
 			if structuralChildIndex < len(rawFieldIDs) {
 				fid = rawFieldIDs[structuralChildIndex]
+				if structuralChildIndex < len(rawInherited) {
+					inherited = rawInherited[structuralChildIndex]
+				}
 			}
 			if structuralChildIndex < len(aliasSeq) {
 				if alias := aliasSeq[structuralChildIndex]; alias != 0 {
@@ -567,7 +571,9 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		if visible {
 			children[out] = n
 			if fieldIDs != nil {
-				fieldIDs[out] = fid
+				if !inherited {
+					fieldIDs[out] = fid
+				}
 			}
 			out++
 			continue
@@ -602,6 +608,9 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			if fid != 0 {
 				for j := out; j < out+len(kids); j++ {
 					if j < len(fieldIDs) && fieldIDs[j] == 0 && children[j] != nil && children[j].isNamed {
+						if inherited && nodeHasDirectFieldID(children[j], fid) {
+							continue
+						}
 						fieldIDs[j] = fid
 						break
 					}
@@ -617,6 +626,18 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		}
 	}
 	return children, fieldIDs
+}
+
+func nodeHasDirectFieldID(n *Node, fid FieldID) bool {
+	if n == nil || fid == 0 {
+		return false
+	}
+	for i := range n.fieldIDs {
+		if n.fieldIDs[i] == fid {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry, deferParentLinks bool, trackChildErrors bool) {
@@ -824,23 +845,24 @@ func cloneNodeInArena(arena *nodeArena, n *Node) *Node {
 }
 
 // buildFieldIDs creates the field ID slice for a reduce action.
-func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeArena) []FieldID {
+func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeArena) ([]FieldID, []bool) {
 	if childCount <= 0 || len(p.language.FieldMapEntries) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	pid := int(productionID)
 	if pid >= len(p.language.FieldMapSlices) {
-		return nil
+		return nil, nil
 	}
 
 	fm := p.language.FieldMapSlices[pid]
 	count := int(fm[1])
 	if count == 0 {
-		return nil
+		return nil, nil
 	}
 
 	fieldIDs := arena.allocFieldIDSlice(childCount)
+	inherited := make([]bool, childCount)
 	start := int(fm[0])
 	assigned := false
 	for i := 0; i < count; i++ {
@@ -851,12 +873,13 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 		entry := p.language.FieldMapEntries[entryIdx]
 		if int(entry.ChildIndex) < len(fieldIDs) {
 			fieldIDs[entry.ChildIndex] = entry.FieldID
+			inherited[entry.ChildIndex] = entry.Inherited
 			assigned = true
 		}
 	}
 
 	if !assigned {
-		return nil
+		return nil, nil
 	}
-	return fieldIDs
+	return fieldIDs, inherited
 }
