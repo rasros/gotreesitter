@@ -873,6 +873,74 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			}
 		}
 
+		// GLR all-dead recovery: when multiple stacks exist and ALL of
+		// them die on the current token, resurrect the best one and do
+		// error recovery instead of abandoning the parse entirely. This
+		// handles grammars where a reduce/shift conflict produces forks
+		// that all converge to a state without an action for the next
+		// token (e.g., trailing commas in jq objects).
+		//
+		// Only activate during retry passes (maxStacksOverride > 0) to
+		// avoid suppressing the first-pass → retry escalation path. On
+		// the first pass, letting all stacks die triggers a retry at a
+		// higher stack cap, which often produces cleaner trees.
+		if numStacks > 1 && maxStacksOverride > 0 {
+			allDead := true
+			for si := 0; si < len(stacks); si++ {
+				if !stacks[si].dead {
+					allDead = false
+					break
+				}
+			}
+			if allDead {
+				// Find the best stack to resurrect.
+				bestIdx := 0
+				for si := 1; si < len(stacks); si++ {
+					if stacks[si].score > stacks[bestIdx].score {
+						bestIdx = si
+					} else if stacks[si].score == stacks[bestIdx].score && stacks[si].depth() < stacks[bestIdx].depth() {
+						bestIdx = si
+					}
+				}
+				s := &stacks[bestIdx]
+				s.dead = false
+
+				// Collapse to single stack so subsequent iterations use
+				// single-stack error recovery paths.
+				stacks[0] = *s
+				stacks = stacks[:1]
+
+				if p.glrTrace {
+					fmt.Printf("[GLR] ALL-DEAD RECOVERY: resurrect stack (was [%d]) st=%d dep=%d byte=%d\n",
+						bestIdx, stacks[0].top().state, stacks[0].depth(), stacks[0].byteOffset)
+				}
+
+				currentState := stacks[0].top().state
+				// Try grammar-directed recovery first.
+				if depth, recoverAct, ok := p.findRecoverActionOnStack(&stacks[0], tok.Symbol, timing); ok {
+					if stacks[0].truncate(depth + 1) {
+						p.applyAction(&stacks[0], recoverAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
+						needToken = true
+					} else {
+						stacks[0].dead = true
+					}
+				} else if stacks[0].depth() > 0 {
+					// Wrap the problematic token in an error node.
+					errNode := newLeafNodeInArena(arena, errorSymbol, false,
+						tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
+					errNode.hasError = true
+					trackChildErrors = true
+					if perfCountersEnabled {
+						perfRecordErrorNode()
+					}
+					errNode.parseState = currentState
+					p.pushStackNode(&stacks[0], currentState, errNode, &scratch.entries, &scratch.gss)
+					nodeCount++
+					needToken = true
+				}
+			}
+		}
+
 		// After processing all stacks: determine whether to advance the
 		// token. If any stack reduced, reuse the same token (the reducing
 		// stacks have new top states and need to re-check the action for
