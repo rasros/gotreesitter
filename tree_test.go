@@ -103,6 +103,30 @@ func TestLeafNodeTypeOutOfRange(t *testing.T) {
 	}
 }
 
+func TestLeafNodeTypeUnescapesPunctuationSymbols(t *testing.T) {
+	lang := &Language{
+		Name:        "test",
+		SymbolNames: []string{"", "\\?", "\\?.", "\\?:", "identifier"},
+	}
+
+	tests := []struct {
+		sym  Symbol
+		want string
+	}{
+		{sym: 1, want: "?"},
+		{sym: 2, want: "?."},
+		{sym: 3, want: "?:"},
+		{sym: 4, want: "identifier"},
+	}
+
+	for _, tc := range tests {
+		n := NewLeafNode(tc.sym, true, 0, 1, Point{}, Point{Row: 0, Column: 1})
+		if got := n.Type(lang); got != tc.want {
+			t.Fatalf("Type(%d) = %q, want %q", tc.sym, got, tc.want)
+		}
+	}
+}
+
 func TestParentNode(t *testing.T) {
 	child0 := NewLeafNode(Symbol(1), true, 0, 3, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 3})
 	child1 := NewLeafNode(Symbol(2), true, 4, 7, Point{Row: 0, Column: 4}, Point{Row: 0, Column: 7})

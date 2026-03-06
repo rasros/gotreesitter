@@ -1,11 +1,51 @@
 package gotreesitter
 
+import "fmt"
+
 func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
 	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
-	if act.Type != ParseActionReduce || s == nil || s.dead || s.accepted || s.shifted {
+	if act.Type != ParseActionReduce || tok.NoLookahead || s == nil || s.dead || s.accepted || s.shifted {
 		return
 	}
 	p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
+}
+
+func (p *Parser) pushOrExtendErrorNode(s *glrStack, state StateID, tok Token, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, trackChildErrors *bool) {
+	if s != nil {
+		top := s.top().node
+		if top != nil &&
+			top.symbol == errorSymbol &&
+			!top.isMissing &&
+			len(top.children) == 0 &&
+			top.parseState == state &&
+			tok.StartByte >= top.endByte {
+			top.endByte = tok.EndByte
+			top.endPoint = tok.EndPoint
+			top.hasError = true
+			if s.byteOffset < top.endByte {
+				s.byteOffset = top.endByte
+			}
+			if trackChildErrors != nil {
+				*trackChildErrors = true
+			}
+			return
+		}
+	}
+
+	errNode := newLeafNodeInArena(arena, errorSymbol, false,
+		tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
+	errNode.hasError = true
+	if trackChildErrors != nil {
+		*trackChildErrors = true
+	}
+	if perfCountersEnabled {
+		perfRecordErrorNode()
+	}
+	errNode.parseState = state
+	p.pushStackNode(s, state, errNode, entryScratch, gssScratch)
+	if nodeCount != nil {
+		*nodeCount = *nodeCount + 1
+	}
 }
 
 func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
@@ -62,6 +102,10 @@ func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bo
 
 // applyAction applies a single parse action to a GLR stack.
 func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
+	if p != nil && p.glrTrace && s != nil {
+		fmt.Printf("    APPLY type=%d cur_state=%d tok=%d act_state=%d act_sym=%d act_cnt=%d extra=%v rep=%v depth=%d\n",
+			act.Type, s.top().state, tok.Symbol, act.State, act.Symbol, act.ChildCount, act.Extra, act.Repetition, s.depth())
+	}
 	switch act.Type {
 	case ParseActionShift:
 		named := p.isNamedSymbol(tok.Symbol)
@@ -76,6 +120,9 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		p.pushStackNode(s, act.State, leaf, entryScratch, gssScratch)
 		s.shifted = true
 		*nodeCount++
+		if p != nil && p.glrTrace {
+			fmt.Printf("      -> SHIFT new_state=%d depth=%d\n", act.State, s.depth())
+		}
 
 	case ParseActionReduce:
 		entries := s.entries
@@ -86,7 +133,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				if tmpEntries != nil {
 					tmp = *tmpEntries
 				}
-				p.applyReduceActionFromGSS(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, tmp, deferParentLinks, trackChildErrors != nil && *trackChildErrors)
+				p.applyReduceActionFromGSS(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, tmp, deferParentLinks, trackChildErrors != nil && *trackChildErrors)
 				return
 			}
 			if s.cacheEntries {
@@ -99,35 +146,33 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				entries, borrowed = s.entriesForRead(tmp)
 			}
 		}
-		p.applyReduceAction(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, entries, deferParentLinks, trackChildErrors != nil && *trackChildErrors)
+		p.applyReduceAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, entries, deferParentLinks, trackChildErrors != nil && *trackChildErrors)
 		if borrowed && tmpEntries != nil {
 			*tmpEntries = entries[:0]
+		}
+		if p != nil && p.glrTrace && s != nil && !s.dead {
+			fmt.Printf("      -> REDUCE top_state=%d depth=%d\n", s.top().state, s.depth())
 		}
 
 	case ParseActionAccept:
 		s.accepted = true
+		if p != nil && p.glrTrace {
+			fmt.Printf("      -> ACCEPT\n")
+		}
 
 	case ParseActionRecover:
 		if tok.Symbol == 0 && tok.StartByte == tok.EndByte {
 			s.accepted = true
 			return
 		}
-		errNode := newLeafNodeInArena(arena, errorSymbol, false,
-			tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
-		errNode.hasError = true
-		if trackChildErrors != nil {
-			*trackChildErrors = true
-		}
-		if perfCountersEnabled {
-			perfRecordErrorNode()
-		}
 		recoverState := s.top().state
 		if act.State != 0 {
 			recoverState = act.State
 		}
-		errNode.parseState = recoverState
-		p.pushStackNode(s, recoverState, errNode, entryScratch, gssScratch)
-		*nodeCount++
+		p.pushOrExtendErrorNode(s, recoverState, tok, nodeCount, arena, entryScratch, gssScratch, trackChildErrors)
+		if p != nil && p.glrTrace && s != nil && !s.dead {
+			fmt.Printf("      -> RECOVER state=%d depth=%d\n", s.top().state, s.depth())
+		}
 	}
 }
 
@@ -173,7 +218,7 @@ func reduceWindowFromGSS(s *glrStack, childCount int, buf []stackEntry) ([]stack
 	return rev, topState, true
 }
 
-func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, tmp []stackEntry, deferParentLinks bool, trackChildErrors bool) {
+func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, tmp []stackEntry, deferParentLinks bool, trackChildErrors bool) {
 	childCount := int(act.ChildCount)
 	windowEntries, topState, ok := reduceWindowFromGSS(s, childCount, tmp)
 	if !ok {
@@ -227,13 +272,16 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduc
 		parent.endPoint = span.endPoint
 	}
 	// Extend parent span to cover invisible children dropped by buildReduceChildren.
-	extendParentSpanToWindow(parent, windowEntries, 0, reducedEnd, p.language.SymbolMetadata)
+	extendParentSpanToWindow(parent, windowEntries, 0, reducedEnd, p.language.SymbolMetadata, p.language.SymbolNames)
 	*nodeCount++
 
 	gotoState := p.lookupGoto(topState, act.Symbol)
 	targetState := topState
 	if gotoState != 0 {
 		targetState = gotoState
+	}
+	if tok.NoLookahead && targetState == topState {
+		parent.isExtra = true
 	}
 	parent.preGotoState = topState
 	parent.parseState = targetState
@@ -351,7 +399,7 @@ func computeReduceRawSpan(entries []stackEntry, start, end int) reduceRawSpan {
 //
 // Trailing extras (separated into [reducedEnd, actualEnd)) are NOT scanned because
 // they become siblings of the parent, not children.
-func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reducedEnd int, symbolMeta []SymbolMetadata) {
+func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reducedEnd int, symbolMeta []SymbolMetadata, symbolNames []string) {
 	// Leading extras: extend startByte backward until the first structural child.
 	for i := start; i < reducedEnd; i++ {
 		n := entries[i].node
@@ -386,6 +434,9 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 		if visible {
 			continue // visible children are already represented in parent's children
 		}
+		if isNonSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
+			continue
+		}
 		// Invisible entries (with or without children) may have span that
 		// extends beyond their inlined children due to nested invisible leaf
 		// extensions. Apply contiguity check below.
@@ -397,6 +448,37 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 			parent.endByte = n.endByte
 			parent.endPoint = n.endPoint
 		}
+		if n.startByte == n.endByte && n.startByte > parent.endByte &&
+			isSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
+			parent.endByte = n.endByte
+			parent.endPoint = n.endPoint
+		}
+	}
+}
+
+func isSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
+	idx := int(sym)
+	if idx < 0 || idx >= len(symbolNames) {
+		return false
+	}
+	switch symbolNames[idx] {
+	case "_implicit_end_tag":
+		return true
+	default:
+		return false
+	}
+}
+
+func isNonSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
+	idx := int(sym)
+	if idx < 0 || idx >= len(symbolNames) {
+		return false
+	}
+	switch symbolNames[idx] {
+	case "_line_ending_or_eof":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -522,7 +604,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	return children, fieldIDs
 }
 
-func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry, deferParentLinks bool, trackChildErrors bool) {
+func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry, deferParentLinks bool, trackChildErrors bool) {
 	childCount := int(act.ChildCount)
 	window, ok := computeReduceRange(entries, childCount)
 	if !ok {
@@ -564,13 +646,16 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 		parent.endPoint = span.endPoint
 	}
 	// Extend parent span to cover invisible children dropped by buildReduceChildren.
-	extendParentSpanToWindow(parent, entries, window.start, window.reducedEnd, p.language.SymbolMetadata)
+	extendParentSpanToWindow(parent, entries, window.start, window.reducedEnd, p.language.SymbolMetadata, p.language.SymbolNames)
 	*nodeCount++
 
 	gotoState := p.lookupGoto(window.topState, act.Symbol)
 	targetState := window.topState
 	if gotoState != 0 {
 		targetState = gotoState
+	}
+	if tok.NoLookahead && targetState == window.topState {
+		parent.isExtra = true
 	}
 	parent.preGotoState = window.topState
 	parent.parseState = targetState

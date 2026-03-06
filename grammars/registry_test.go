@@ -124,6 +124,13 @@ func TestAuditParseSupportIncludesLuaCustomTokenSource(t *testing.T) {
 	}
 }
 
+func TestAuditParseSupportIncludesTomlNativeLexerBackend(t *testing.T) {
+	report := parseSupportForLang(t, "toml")
+	if report.Backend != ParseBackendDFA && report.Backend != ParseBackendDFAPartial {
+		t.Fatalf("expected toml backend to use native lexer, got %q", report.Backend)
+	}
+}
+
 func TestAuditParseSupportIncludesJavaScriptDFA(t *testing.T) {
 	report := parseSupportForLang(t, "javascript")
 	if report.Backend != ParseBackendDFA {

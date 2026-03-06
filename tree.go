@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Range is a span of source text.
@@ -298,14 +299,26 @@ func (n *Node) Text(source []byte) string {
 func (n *Node) Type(lang *Language) string {
 	if int(n.symbol) < len(lang.SymbolNames) {
 		name := lang.SymbolNames[n.symbol]
-		// Some generated grammars escape punctuation symbol names in parse
-		// tables (e.g. "\\?"). Match C tree-sitter display names.
-		if name == "\\?" {
-			return "?"
-		}
+		name = unescapePunctuationSymbolName(name)
 		return name
 	}
 	return ""
+}
+
+func unescapePunctuationSymbolName(name string) string {
+	if !strings.Contains(name, "\\") {
+		return name
+	}
+	candidate := strings.ReplaceAll(name, "\\", "")
+	if candidate == "" {
+		return name
+	}
+	for _, r := range candidate {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) || r == '_' {
+			return name
+		}
+	}
+	return candidate
 }
 
 func pointLessThan(a, b Point) bool {

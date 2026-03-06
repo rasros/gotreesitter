@@ -119,10 +119,6 @@ func defaultTokenSourceFactory(name string) func(src []byte, lang *gotreesitter.
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewGoTokenSourceOrEOF(src, lang)
 		}
-	case "html":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewHTMLTokenSourceOrEOF(src, lang)
-		}
 	case "java":
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewJavaTokenSourceOrEOF(src, lang)
@@ -134,10 +130,6 @@ func defaultTokenSourceFactory(name string) func(src []byte, lang *gotreesitter.
 	case "lua":
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewLuaTokenSourceOrEOF(src, lang)
-		}
-	case "toml":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewTomlTokenSourceOrEOF(src, lang)
 		}
 	default:
 		return nil

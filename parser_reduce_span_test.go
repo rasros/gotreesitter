@@ -24,7 +24,7 @@ func TestExtendParentSpanCoversInvisibleLeafChild(t *testing.T) {
 	meta := []SymbolMetadata{
 		{}, {}, {Visible: true}, {}, {Visible: false},
 	}
-	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, nil)
 
 	if got, want := parent.startByte, uint32(8); got != want {
 		t.Fatalf("parent.startByte = %d, want %d", got, want)
@@ -54,7 +54,7 @@ func TestExtendParentSpanSkipsDiscontiguousPhantom(t *testing.T) {
 	meta := []SymbolMetadata{
 		{}, {}, {Visible: true}, {}, {Visible: false},
 	}
-	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, []string{"", "", "visible", "", "_automatic_semicolon"})
 
 	if got, want := parent.endByte, uint32(26); got != want {
 		t.Fatalf("parent.endByte = %d, want %d (phantom should not extend)", got, want)
@@ -84,7 +84,7 @@ func TestExtendParentSpanCoversInvisibleWithChildren(t *testing.T) {
 	meta := []SymbolMetadata{
 		{}, {}, {}, {}, {Visible: false}, {Visible: true},
 	}
-	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, nil)
 
 	if got, want := parent.endByte, uint32(15); got != want {
 		t.Fatalf("parent.endByte = %d, want %d", got, want)
@@ -101,7 +101,63 @@ func TestExtendParentSpanNoOp(t *testing.T) {
 	core := NewLeafNode(2, true, 10, 20, Point{Row: 2, Column: 10}, Point{Row: 2, Column: 20})
 	entries := []stackEntry{{state: 0, node: core}}
 	meta := []SymbolMetadata{{}, {}, {Visible: true}}
-	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, nil)
+
+	if got, want := parent.startByte, uint32(10); got != want {
+		t.Fatalf("parent.startByte = %d, want %d", got, want)
+	}
+	if got, want := parent.endByte, uint32(21); got != want {
+		t.Fatalf("parent.endByte = %d, want %d", got, want)
+	}
+}
+
+func TestExtendParentSpanAllowsImplicitEndTagGap(t *testing.T) {
+	parent := NewParentNode(3, true, nil, nil, 0)
+	parent.startByte = 10
+	parent.endByte = 20
+	parent.startPoint = Point{Row: 1, Column: 10}
+	parent.endPoint = Point{Row: 1, Column: 20}
+
+	core := NewLeafNode(2, true, 10, 20, Point{Row: 1, Column: 10}, Point{Row: 1, Column: 20})
+	implicitEnd := NewLeafNode(4, false, 21, 21, Point{Row: 1, Column: 21}, Point{Row: 1, Column: 21})
+
+	entries := []stackEntry{
+		{state: 0, node: core},
+		{state: 0, node: implicitEnd},
+	}
+	meta := []SymbolMetadata{
+		{}, {}, {Visible: true}, {}, {Visible: false},
+	}
+	names := []string{"", "", "visible", "", "_implicit_end_tag"}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, names)
+
+	if got, want := parent.startByte, uint32(10); got != want {
+		t.Fatalf("parent.startByte = %d, want %d", got, want)
+	}
+	if got, want := parent.endByte, uint32(21); got != want {
+		t.Fatalf("parent.endByte = %d, want %d", got, want)
+	}
+}
+
+func TestExtendParentSpanSkipsInvisibleLineEnding(t *testing.T) {
+	parent := NewParentNode(3, true, nil, nil, 0)
+	parent.startByte = 10
+	parent.endByte = 20
+	parent.startPoint = Point{Row: 1, Column: 10}
+	parent.endPoint = Point{Row: 1, Column: 20}
+
+	core := NewLeafNode(2, true, 10, 20, Point{Row: 1, Column: 10}, Point{Row: 1, Column: 20})
+	lineEnd := NewLeafNode(4, false, 20, 21, Point{Row: 1, Column: 20}, Point{Row: 2, Column: 0})
+
+	entries := []stackEntry{
+		{state: 0, node: core},
+		{state: 0, node: lineEnd},
+	}
+	meta := []SymbolMetadata{
+		{}, {}, {Visible: true}, {}, {Visible: false},
+	}
+	names := []string{"", "", "visible", "", "_line_ending_or_eof"}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, names)
 
 	if got, want := parent.startByte, uint32(10); got != want {
 		t.Fatalf("parent.startByte = %d, want %d", got, want)
