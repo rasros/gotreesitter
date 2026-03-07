@@ -1227,7 +1227,6 @@ func flattenedSpanConflictSummary(children []*Node, fieldIDs []FieldID, start, e
 	}
 	return conflictCount, false
 }
-
 func nodeHasDirectFieldID(n *Node, fid FieldID) bool {
 	if n == nil || fid == 0 {
 		return false
