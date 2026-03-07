@@ -221,7 +221,6 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 				return tok
 			}
 		}
-
 		if ts.preprocState == cPreprocAfterInclude {
 			if tok, ok := ts.systemLibStringToken(); ok {
 				return tok
