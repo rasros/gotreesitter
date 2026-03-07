@@ -60,6 +60,7 @@ type glrMergeScratch struct {
 	result    []glrStack
 	slots     []glrMergeSlot
 	perKeyCap int
+	language  *Language
 }
 
 type glrMergeKey struct {
@@ -328,11 +329,15 @@ func stackHash(s glrStack) uint64 {
 }
 
 func stackEntriesEqual(a, b []stackEntry) bool {
+	return stackEntriesEqualForLanguage(nil, a, b)
+}
+
+func stackEntriesEqualForLanguage(lang *Language, a, b []stackEntry) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i].state != b[i].state || !stackEntryNodesEquivalent(a[i].node, b[i].node) {
+		if a[i].state != b[i].state || !stackEntryNodesEquivalentForLanguage(lang, a[i].node, b[i].node) {
 			return false
 		}
 	}
@@ -340,6 +345,10 @@ func stackEntriesEqual(a, b []stackEntry) bool {
 }
 
 func gssStacksEqual(a, b gssStack) bool {
+	return gssStacksEqualForLanguage(nil, a, b)
+}
+
+func gssStacksEqualForLanguage(lang *Language, a, b gssStack) bool {
 	if a.head == b.head {
 		return true
 	}
@@ -356,7 +365,7 @@ func gssStacksEqual(a, b gssStack) bool {
 		if an == bn {
 			return true
 		}
-		if an.entry.state != bn.entry.state || !stackEntryNodesEquivalent(an.entry.node, bn.entry.node) {
+		if an.entry.state != bn.entry.state || !stackEntryNodesEquivalentForLanguage(lang, an.entry.node, bn.entry.node) {
 			return false
 		}
 	}
@@ -364,6 +373,10 @@ func gssStacksEqual(a, b gssStack) bool {
 }
 
 func stackEquivalent(a, b glrStack) bool {
+	return stackEquivalentForLanguage(nil, a, b)
+}
+
+func stackEquivalentForLanguage(lang *Language, a, b glrStack) bool {
 	if perfCountersEnabled {
 		perfRecordStackEquivalentCall()
 	}
@@ -371,27 +384,27 @@ func stackEquivalent(a, b glrStack) bool {
 		return false
 	}
 	if a.gss.head != nil && b.gss.head != nil {
-		eq := gssStacksEqual(a.gss, b.gss)
+		eq := gssStacksEqualForLanguage(lang, a.gss, b.gss)
 		if eq && perfCountersEnabled {
 			perfRecordStackEquivalentTrue()
 		}
 		return eq
 	}
 	if a.gss.head != nil {
-		eq := gssStackEntriesEqual(a.gss, b.entries)
+		eq := gssStackEntriesEqualForLanguage(lang, a.gss, b.entries)
 		if eq && perfCountersEnabled {
 			perfRecordStackEquivalentTrue()
 		}
 		return eq
 	}
 	if b.gss.head != nil {
-		eq := gssStackEntriesEqual(b.gss, a.entries)
+		eq := gssStackEntriesEqualForLanguage(lang, b.gss, a.entries)
 		if eq && perfCountersEnabled {
 			perfRecordStackEquivalentTrue()
 		}
 		return eq
 	}
-	eq := stackEntriesEqual(a.entries, b.entries)
+	eq := stackEntriesEqualForLanguage(lang, a.entries, b.entries)
 	if eq && perfCountersEnabled {
 		perfRecordStackEquivalentTrue()
 	}
@@ -399,6 +412,10 @@ func stackEquivalent(a, b glrStack) bool {
 }
 
 func gssStackEntriesEqual(gss gssStack, entries []stackEntry) bool {
+	return gssStackEntriesEqualForLanguage(nil, gss, entries)
+}
+
+func gssStackEntriesEqualForLanguage(lang *Language, gss gssStack, entries []stackEntry) bool {
 	if gss.head == nil {
 		return len(entries) == 0
 	}
@@ -411,13 +428,15 @@ func gssStackEntriesEqual(gss gssStack, entries []stackEntry) bool {
 			return false
 		}
 		e := entries[i]
-		if n.entry.state != e.state || !stackEntryNodesEquivalent(n.entry.node, e.node) {
+		if n.entry.state != e.state || !stackEntryNodesEquivalentForLanguage(lang, n.entry.node, e.node) {
 			return false
 		}
 		i--
 	}
 	return i == -1
 }
+
+const stackEquivalentFrontierDepthLimit = 8
 
 func stackEntryNodesEquivalent(a, b *Node) bool {
 	if a == b {
@@ -459,6 +478,160 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 			ca.isNamed != cb.isNamed ||
 			ca.hasError != cb.hasError ||
 			len(ca.children) != len(cb.children) {
+			return false
+		}
+	}
+	return true
+}
+
+func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
+	if lang != nil && lang.Name == "c_sharp" {
+		if !stackEntryNodesEquivalentFrontier(a, b, stackEquivalentFrontierDepthLimit) {
+			return false
+		}
+		if a == nil || b == nil {
+			return a == b
+		}
+		if a.Type(lang) == "block" && len(a.children) > 3 {
+			compared := 0
+			for i := len(a.children) - 1; i >= 0 && compared < 3; i-- {
+				child := a.children[i]
+				if child == nil || child.isExtra || (!child.isNamed && len(child.children) == 0) {
+					continue
+				}
+				if !stackEntryNodesEquivalentFrontier(child, b.children[i], stackEquivalentFrontierDepthLimit-1) {
+					return false
+				}
+				compared++
+			}
+		}
+		if a.Type(lang) == "compilation_unit" && len(a.children) > 2 {
+			compared := 0
+			for i := len(a.children) - 1; i >= 0 && compared < 2; i-- {
+				child := a.children[i]
+				if child == nil || child.isExtra || (!child.isNamed && len(child.children) == 0) {
+					continue
+				}
+				if !stackEntryNodesEquivalentFrontier(child, b.children[i], stackEquivalentFrontierDepthLimit-1) {
+					return false
+				}
+				compared++
+			}
+		}
+		return true
+	}
+	return stackEntryNodesEquivalent(a, b)
+}
+
+func stackEntryNodesEquivalentFrontier(a, b *Node, depth int) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.symbol != b.symbol {
+		return false
+	}
+	if a.startByte != b.startByte ||
+		a.endByte != b.endByte ||
+		a.isExtra != b.isExtra ||
+		a.isNamed != b.isNamed ||
+		a.isMissing != b.isMissing ||
+		a.hasError != b.hasError ||
+		a.parseState != b.parseState ||
+		a.preGotoState != b.preGotoState ||
+		a.productionID != b.productionID ||
+		len(a.children) != len(b.children) {
+		return false
+	}
+	if a.hasError && b.hasError {
+		return true
+	}
+	if len(a.fieldIDs) != len(b.fieldIDs) {
+		return false
+	}
+	for i := range a.fieldIDs {
+		if a.fieldIDs[i] != b.fieldIDs[i] {
+			return false
+		}
+	}
+
+	frontier := -1
+	for i := range a.children {
+		ca := a.children[i]
+		cb := b.children[i]
+		if ca == cb {
+			if ca != nil && !ca.isExtra && (ca.isNamed || len(ca.children) > 0) {
+				frontier = i
+			}
+			continue
+		}
+		if ca == nil || cb == nil {
+			return false
+		}
+		if ca.symbol != cb.symbol ||
+			ca.startByte != cb.startByte ||
+			ca.endByte != cb.endByte ||
+			ca.isExtra != cb.isExtra ||
+			ca.isNamed != cb.isNamed ||
+			ca.isMissing != cb.isMissing ||
+			ca.hasError != cb.hasError ||
+			ca.parseState != cb.parseState ||
+			ca.preGotoState != cb.preGotoState ||
+			ca.productionID != cb.productionID ||
+			len(ca.children) != len(cb.children) ||
+			len(ca.fieldIDs) != len(cb.fieldIDs) {
+			return false
+		}
+		for j := range ca.fieldIDs {
+			if ca.fieldIDs[j] != cb.fieldIDs[j] {
+				return false
+			}
+		}
+		if !ca.isExtra && (ca.isNamed || len(ca.children) > 0) {
+			frontier = i
+		}
+	}
+	if depth == 0 {
+		return true
+	}
+
+	candidates := [8]int{}
+	candidateCount := 0
+	addCandidate := func(idx int) {
+		if idx < 0 {
+			return
+		}
+		for i := 0; i < candidateCount; i++ {
+			if candidates[i] == idx {
+				return
+			}
+		}
+		if candidateCount < len(candidates) {
+			candidates[candidateCount] = idx
+			candidateCount++
+		}
+	}
+	if len(a.children) <= 3 {
+		for i := range a.fieldIDs {
+			if a.fieldIDs[i] == 0 {
+				continue
+			}
+			child := a.children[i]
+			if child == nil || child.isExtra || (!child.isNamed && len(child.children) == 0) {
+				continue
+			}
+			addCandidate(i)
+		}
+	}
+	addCandidate(frontier)
+	if candidateCount == 0 {
+		return true
+	}
+	for i := 0; i < candidateCount; i++ {
+		idx := candidates[i]
+		if !stackEntryNodesEquivalentFrontier(a.children[idx], b.children[idx], depth-1) {
 			return false
 		}
 	}
@@ -674,7 +847,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 				hashMatched = true
 				idx := slot.indices[j]
 				existing := &result[idx]
-				if stackEquivalent(*existing, stack) {
+				if stackEquivalentForLanguage(scratch.language, *existing, stack) {
 					duplicateIndex = idx
 					break
 				}

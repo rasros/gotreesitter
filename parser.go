@@ -516,6 +516,21 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if mergePerKeyCap > maxStacksPerMergeKeyCeiling {
 		mergePerKeyCap = maxStacksPerMergeKeyCeiling
 	}
+	if reuse == nil && p.language != nil && p.language.Name == "bash" {
+		if maxStacks < 256 {
+			maxStacks = 256
+		}
+		if mergePerKeyCap < 256 {
+			mergePerKeyCap = 256
+		}
+	}
+	if reuse == nil && p.language != nil && p.language.Name == "c_sharp" {
+		// C# member-access vs qualified-name ambiguity needs a slightly
+		// wider per-key survivor budget on full parses to match the C runtime.
+		if mergePerKeyCap < 16 {
+			mergePerKeyCap = 16
+		}
+	}
 	if reuse != nil {
 		// Incremental reparses benefit from tighter GLR retention because
 		// edits are localized and we prioritize latency over broad ambiguity fanout.
@@ -584,6 +599,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				return finalize(stacks, ParseStopNoStacksAlive)
 			}
 			// Prune dead stacks and collapse only truly duplicate stack versions.
+			scratch.merge.language = p.language
 			stacks = mergeStacksWithScratch(stacks, &scratch.merge)
 			if len(stacks) == 0 {
 				return finalizeErrorTree(ParseStopNoStacksAlive)
