@@ -18,9 +18,10 @@ func parseNodeLimit(sourceLen int) int {
 	// correctness gates can run without relying on external scale overrides.
 	// The 300k floor avoids premature truncation on small/medium inputs
 	// during short-lived ambiguity spikes and malformed-input recovery.
-	// The sourceLen*40 budget keeps corpus parity green while GLR/node
-	// pressure is still being optimized.
-	limit := max(300_000, sourceLen*40)
+	// The sourceLen*52 budget avoids first-pass node-limit retries on the
+	// default synthetic Go full-parse workload while staying materially below
+	// the diagnostic 2x override used for deeper corpus investigations.
+	limit := max(300_000, sourceLen*52)
 	scale := parseNodeLimitScaleFactor()
 	if scale <= 1 {
 		return limit
