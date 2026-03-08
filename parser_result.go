@@ -93,6 +93,9 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		expectedRootSymbol = oldTree.RootNode().symbol
 		hasExpectedRoot = true
 	}
+	if p != nil && p.language != nil && p.language.Name == "python" {
+		nodes = collapsePythonRootFragments(nodes, arena, p.language)
+	}
 	borrowedResolved := false
 	var borrowed []*nodeArena
 	getBorrowed := func() []*nodeArena {
@@ -106,6 +109,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 
 	if len(nodes) == 1 {
 		candidate := nodes[0]
+		candidate = repairPythonRootNode(candidate, arena, p.language)
 		extendNodeToTrailingWhitespace(candidate, source)
 		p.normalizeRootSourceStart(candidate, source)
 		normalizeKnownSpanAttribution(candidate, source, p.language)
@@ -215,6 +219,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 				realRoot.endPoint = e.endPoint
 			}
 		}
+		realRoot = repairPythonRootNode(realRoot, arena, p.language)
 		extendNodeToTrailingWhitespace(realRoot, source)
 		p.normalizeRootSourceStart(realRoot, source)
 		normalizeKnownSpanAttribution(realRoot, source, p.language)
@@ -232,7 +237,10 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		rootSymbol = expectedRootSymbol
 	}
 	root := newParentNodeInArena(arena, rootSymbol, true, rootChildren, nil, 0)
-	root.hasError = true
+	if !(p != nil && p.language != nil && p.language.Name == "python" && hasExpectedRoot && pythonModuleChildrenLookComplete(nodes, p.language)) {
+		root.hasError = true
+	}
+	root = repairPythonRootNode(root, arena, p.language)
 	extendNodeToTrailingWhitespace(root, source)
 	p.normalizeRootSourceStart(root, source)
 	normalizeKnownSpanAttribution(root, source, p.language)
@@ -312,4 +320,685 @@ func advancePointByBytes(start Point, b []byte) Point {
 		p.Column++
 	}
 	return p
+}
+
+func collapsePythonRootFragments(nodes []*Node, arena *nodeArena, lang *Language) []*Node {
+	if len(nodes) == 0 || lang == nil || lang.Name != "python" {
+		return nodes
+	}
+	nodes = dropZeroWidthUnnamedTail(nodes, lang)
+	for {
+		next, changed := collapsePythonClassFragments(nodes, arena, lang)
+		if changed {
+			nodes = next
+			nodes = dropZeroWidthUnnamedTail(nodes, lang)
+			continue
+		}
+		next, changed = collapsePythonTerminalIfSuffix(nodes, arena, lang)
+		if changed {
+			nodes = next
+			nodes = dropZeroWidthUnnamedTail(nodes, lang)
+			continue
+		}
+		return normalizePythonModuleChildren(nodes, arena, lang)
+	}
+}
+
+func collapsePythonClassFragments(nodes []*Node, arena *nodeArena, lang *Language) ([]*Node, bool) {
+	if len(nodes) < 5 {
+		return nodes, false
+	}
+	classDefSym, ok := symbolByName(lang, "class_definition")
+	if !ok {
+		return nodes, false
+	}
+	blockSym, ok := symbolByName(lang, "block")
+	if !ok {
+		return nodes, false
+	}
+	for i := 0; i < len(nodes)-4; i++ {
+		j := i
+		classNode := nodes[j]
+		nameNode := nodes[j+1]
+		if classNode == nil || nameNode == nil {
+			continue
+		}
+		if classNode.Type(lang) != "class" || nameNode.Type(lang) != "identifier" {
+			continue
+		}
+		var argNode *Node
+		if j+5 < len(nodes) && nodes[j+2] != nil && nodes[j+2].Type(lang) == "argument_list" {
+			argNode = nodes[j+2]
+			j++
+		}
+		colonNode := nodes[j+2]
+		indentNode := nodes[j+3]
+		bodyNode := nodes[j+4]
+		if colonNode == nil || indentNode == nil || bodyNode == nil {
+			continue
+		}
+		if colonNode.Type(lang) != ":" || indentNode.Type(lang) != "_indent" || bodyNode.Type(lang) != "module_repeat1" {
+			continue
+		}
+
+		bodyChildren := flattenPythonModuleRepeat(bodyNode, nil, lang)
+		if len(bodyChildren) == 0 {
+			continue
+		}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(bodyChildren))
+			copy(buf, bodyChildren)
+			bodyChildren = buf
+		}
+	blockNode := newParentNodeInArena(arena, blockSym, true, bodyChildren, nil, 0)
+	blockNode.hasError = false
+
+	classChildren := make([]*Node, 0, 5)
+	classChildren = append(classChildren, classNode, nameNode)
+		if argNode != nil {
+			classChildren = append(classChildren, argNode)
+		}
+		classChildren = append(classChildren, colonNode, blockNode)
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(classChildren))
+		copy(buf, classChildren)
+		classChildren = buf
+	}
+	classFieldIDs := pythonSyntheticClassFieldIDs(arena, len(classChildren), argNode != nil, lang)
+	classDef := newParentNodeInArena(arena, classDefSym, true, classChildren, classFieldIDs, 0)
+	classDef.hasError = false
+
+		out := make([]*Node, 0, len(nodes)-(j+5-i)+1)
+		out = append(out, nodes[:i]...)
+		out = append(out, classDef)
+		out = append(out, nodes[j+5:]...)
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(out))
+			copy(buf, out)
+			out = buf
+		}
+		return out, true
+	}
+	return nodes, false
+}
+
+func collapsePythonTerminalIfSuffix(nodes []*Node, arena *nodeArena, lang *Language) ([]*Node, bool) {
+	if len(nodes) < 6 {
+		return nodes, false
+	}
+	ifSym, ok := symbolByName(lang, "if_statement")
+	if !ok {
+		return nodes, false
+	}
+	blockSym, ok := symbolByName(lang, "block")
+	if !ok {
+		return nodes, false
+	}
+	n := len(nodes)
+	ifNode := nodes[n-6]
+	condNode := nodes[n-5]
+	colonNode := nodes[n-4]
+	indentNode := nodes[n-3]
+	bodyNode := nodes[n-2]
+	dedentNode := nodes[n-1]
+	if ifNode == nil || condNode == nil || colonNode == nil || indentNode == nil || bodyNode == nil || dedentNode == nil {
+		return nodes, false
+	}
+	if ifNode.Type(lang) != "if" || colonNode.Type(lang) != ":" || indentNode.Type(lang) != "_indent" || bodyNode.Type(lang) != "_simple_statements" || dedentNode.Type(lang) != "_dedent" {
+		return nodes, false
+	}
+	if !condNode.IsNamed() {
+		return nodes, false
+	}
+
+	blockChildren := []*Node{indentNode, bodyNode, dedentNode}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(blockChildren))
+		copy(buf, blockChildren)
+		blockChildren = buf
+	}
+	blockNode := newParentNodeInArena(arena, blockSym, true, blockChildren, nil, 0)
+	blockNode.hasError = false
+
+	ifChildren := []*Node{ifNode, condNode, colonNode, blockNode}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(ifChildren))
+		copy(buf, ifChildren)
+		ifChildren = buf
+	}
+	ifFieldIDs := pythonSyntheticIfFieldIDs(arena, len(ifChildren), lang)
+	ifStmt := newParentNodeInArena(arena, ifSym, true, ifChildren, ifFieldIDs, 0)
+	ifStmt.hasError = false
+
+	out := make([]*Node, 0, n-5)
+	out = append(out, nodes[:n-6]...)
+	out = append(out, ifStmt)
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(out))
+		copy(buf, out)
+		return buf, true
+	}
+	return out, true
+}
+
+func flattenPythonModuleRepeat(node *Node, out []*Node, lang *Language) []*Node {
+	if node == nil {
+		return out
+	}
+	if node.Type(lang) == "module_repeat1" {
+		for _, child := range node.children {
+			out = flattenPythonModuleRepeat(child, out, lang)
+		}
+		return out
+	}
+	if node.IsNamed() {
+		out = append(out, node)
+	}
+	return out
+}
+
+func normalizePythonModuleChildren(nodes []*Node, arena *nodeArena, lang *Language) []*Node {
+	if len(nodes) == 0 || lang == nil || lang.Name != "python" {
+		return nodes
+	}
+	out := make([]*Node, 0, len(nodes))
+	changed := false
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		normalized, nodeChanged := normalizePythonModuleNode(node, lang)
+		if nodeChanged {
+			out = append(out, normalized)
+			changed = true
+			continue
+		}
+		out = append(out, node)
+	}
+	if !changed {
+		return nodes
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(out))
+		copy(buf, out)
+		return buf
+	}
+	return out
+}
+
+func normalizePythonModuleNode(node *Node, lang *Language) (*Node, bool) {
+	changed := false
+	for node != nil {
+		if node.Type(lang) == "_simple_statements" && len(node.children) == 1 {
+			child := node.children[0]
+			if child != nil && child.IsNamed() {
+				node = child
+				changed = true
+				continue
+			}
+		}
+		if node.Type(lang) == "expression_statement" && len(node.children) == 1 {
+			child := node.children[0]
+			if child != nil && child.IsNamed() {
+				node = child
+				changed = true
+				continue
+			}
+		}
+		if (node.Type(lang) == "expression" || node.Type(lang) == "primary_expression") && len(node.children) == 1 {
+			child := node.children[0]
+			if child != nil && child.IsNamed() {
+				node = child
+				changed = true
+				continue
+			}
+		}
+		break
+	}
+	return node, changed
+}
+
+func repairPythonRootNode(root *Node, arena *nodeArena, lang *Language) *Node {
+	if root == nil || lang == nil || lang.Name != "python" || root.Type(lang) != "module" {
+		return root
+	}
+	children := collapsePythonRootFragments(root.children, arena, lang)
+	changed := len(children) != len(root.children)
+	if !changed {
+		for i := range children {
+			if children[i] != root.children[i] {
+				changed = true
+				break
+			}
+		}
+	}
+
+	repaired := make([]*Node, 0, len(children))
+	for _, child := range children {
+		fixed := repairPythonTopLevelNode(child, arena, lang)
+		if fixed != child {
+			changed = true
+		}
+		repaired = append(repaired, fixed)
+	}
+
+	if !changed {
+		if root.hasError && pythonModuleChildrenLookComplete(repaired, lang) {
+			cloned := cloneNodeInArena(arena, root)
+			cloned.hasError = false
+			return cloned
+		}
+		return root
+	}
+
+	cloned := cloneNodeInArena(arena, root)
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(repaired))
+		copy(buf, repaired)
+		repaired = buf
+	}
+	cloned.children = repaired
+	cloned.fieldIDs = nil
+	if pythonModuleChildrenLookComplete(repaired, lang) {
+		cloned.hasError = false
+	}
+	return cloned
+}
+
+func repairPythonTopLevelNode(node *Node, arena *nodeArena, lang *Language) *Node {
+	if node == nil || lang == nil || lang.Name != "python" {
+		return node
+	}
+	return repairPythonNode(node, arena, lang)
+}
+
+func repairPythonNode(node *Node, arena *nodeArena, lang *Language) *Node {
+	if node == nil || lang == nil || lang.Name != "python" {
+		return node
+	}
+	normalized, changed := normalizePythonModuleNode(node, lang)
+	if changed {
+		node = normalized
+	}
+	switch node.Type(lang) {
+	case "class_definition":
+		return repairPythonClassDefinition(node, arena, lang)
+	case "function_definition":
+		return repairPythonFunctionDefinition(node, arena, lang)
+	case "if_statement":
+		return repairPythonIfStatement(node, arena, lang)
+	case "block":
+		repaired, _ := repairPythonBlock(node, arena, lang, false)
+		return repaired
+	default:
+		return node
+	}
+}
+
+func repairPythonClassDefinition(node *Node, arena *nodeArena, lang *Language) *Node {
+	if node == nil || node.Type(lang) != "class_definition" || len(node.children) == 0 {
+		return node
+	}
+	bodyIndex := -1
+	for i, child := range node.children {
+		if child != nil && child.Type(lang) == "block" {
+			bodyIndex = i
+		}
+	}
+	if bodyIndex < 0 {
+		return node
+	}
+	body := node.children[bodyIndex]
+	repairedBody, changed := repairPythonBlock(body, arena, lang, true)
+	if !changed {
+		return node
+	}
+
+	cloned := cloneNodeInArena(arena, node)
+	children := make([]*Node, len(node.children))
+	copy(children, node.children)
+	children[bodyIndex] = repairedBody
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	cloned.children = children
+	if repairedBody != nil {
+		cloned.endByte = repairedBody.endByte
+		cloned.endPoint = repairedBody.endPoint
+	}
+	return cloned
+}
+
+func repairPythonFunctionDefinition(node *Node, arena *nodeArena, lang *Language) *Node {
+	if node == nil || node.Type(lang) != "function_definition" || len(node.children) == 0 {
+		return node
+	}
+	bodyIndex := -1
+	for i, child := range node.children {
+		if child != nil && child.Type(lang) == "block" {
+			bodyIndex = i
+		}
+	}
+	if bodyIndex < 0 {
+		return node
+	}
+	body := node.children[bodyIndex]
+	repairedBody, changed := repairPythonBlock(body, arena, lang, false)
+	if !changed {
+		return node
+	}
+
+	cloned := cloneNodeInArena(arena, node)
+	children := make([]*Node, len(node.children))
+	copy(children, node.children)
+	children[bodyIndex] = repairedBody
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	cloned.children = children
+	if repairedBody != nil {
+		cloned.endByte = repairedBody.endByte
+		cloned.endPoint = repairedBody.endPoint
+	}
+	return cloned
+}
+
+func repairPythonIfStatement(node *Node, arena *nodeArena, lang *Language) *Node {
+	if node == nil || node.Type(lang) != "if_statement" || len(node.children) == 0 {
+		return node
+	}
+	children := make([]*Node, len(node.children))
+	changed := false
+	for i, child := range node.children {
+		repaired := repairPythonNode(child, arena, lang)
+		if repaired != child {
+			changed = true
+		}
+		children[i] = repaired
+	}
+	if !changed {
+		return node
+	}
+
+	cloned := cloneNodeInArena(arena, node)
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	cloned.children = children
+	last := children[len(children)-1]
+	if last != nil {
+		cloned.endByte = last.endByte
+		cloned.endPoint = last.endPoint
+	}
+	return cloned
+}
+
+func repairPythonBlock(node *Node, arena *nodeArena, lang *Language, allowHoist bool) (*Node, bool) {
+	if node == nil || node.Type(lang) != "block" {
+		return node, false
+	}
+	pending := append([]*Node(nil), node.children...)
+	out := make([]*Node, 0, len(node.children))
+	changed := false
+
+	for len(pending) > 0 {
+		cur := pending[0]
+		pending = pending[1:]
+		if cur == nil {
+			continue
+		}
+		norm, normChanged := normalizePythonModuleNode(cur, lang)
+		if normChanged {
+			changed = true
+		}
+		cur = norm
+		if cur != nil {
+			switch cur.Type(lang) {
+			case "_indent", "_dedent":
+				changed = true
+				continue
+			}
+		}
+
+		if allowHoist && cur != nil && cur.Type(lang) == "function_definition" {
+			repairedFn, hoisted, split := splitPythonOvernestedFunction(cur, arena, lang)
+			if split {
+				changed = true
+				repairedFn = repairPythonNode(repairedFn, arena, lang)
+				out = append(out, repairedFn)
+				if len(hoisted) > 0 {
+					pending = append(append([]*Node{}, hoisted...), pending...)
+				}
+				continue
+			}
+		}
+
+		repaired := repairPythonNode(cur, arena, lang)
+		if repaired != cur {
+			changed = true
+		}
+		out = append(out, repaired)
+	}
+
+	if !changed {
+		firstNamed := pythonBlockStartAnchor(out, lang)
+		lastSpan := pythonBlockEndAnchor(out)
+		if firstNamed == nil || lastSpan == nil {
+			return node, false
+		}
+		if node.startByte == firstNamed.startByte &&
+			node.startPoint == firstNamed.startPoint &&
+			node.endByte == lastSpan.endByte &&
+			node.endPoint == lastSpan.endPoint {
+			return node, false
+		}
+		changed = true
+	}
+
+	cloned := cloneNodeInArena(arena, node)
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(out))
+		copy(buf, out)
+		out = buf
+	}
+	cloned.children = out
+	cloned.fieldIDs = nil
+	firstNamed := pythonBlockStartAnchor(out, lang)
+	lastSpan := pythonBlockEndAnchor(out)
+	if firstNamed != nil {
+		cloned.startByte = firstNamed.startByte
+		cloned.startPoint = firstNamed.startPoint
+	}
+	if lastSpan != nil {
+		cloned.endByte = lastSpan.endByte
+		cloned.endPoint = lastSpan.endPoint
+	}
+	return cloned, true
+}
+
+func pythonBlockStartAnchor(children []*Node, lang *Language) *Node {
+	for _, child := range children {
+		if child == nil {
+			continue
+		}
+		typ := child.Type(lang)
+		if typ == "_indent" || typ == "_dedent" {
+			continue
+		}
+		if child.endByte > child.startByte || child.IsNamed() {
+			return child
+		}
+	}
+	return nil
+}
+
+func pythonBlockEndAnchor(children []*Node) *Node {
+	for i := len(children) - 1; i >= 0; i-- {
+		child := children[i]
+		if child != nil && child.endByte > child.startByte {
+			return child
+		}
+	}
+	return nil
+}
+
+func splitPythonOvernestedFunction(node *Node, arena *nodeArena, lang *Language) (*Node, []*Node, bool) {
+	if node == nil || node.Type(lang) != "function_definition" {
+		return node, nil, false
+	}
+	bodyIndex := -1
+	for i, child := range node.children {
+		if child != nil && child.Type(lang) == "block" {
+			bodyIndex = i
+		}
+	}
+	if bodyIndex < 0 {
+		return node, nil, false
+	}
+	body := node.children[bodyIndex]
+	if body == nil || len(body.children) == 0 {
+		return node, nil, false
+	}
+	fnColumn := node.startPoint.Column
+	hoistStart := -1
+	for i, child := range body.children {
+		if child == nil || !child.IsNamed() {
+			continue
+		}
+		if child.startPoint.Column <= fnColumn {
+			hoistStart = i
+			break
+		}
+	}
+	if hoistStart <= 0 {
+		return node, nil, false
+	}
+
+	kept := append([]*Node(nil), body.children[:hoistStart]...)
+	hoisted := append([]*Node(nil), body.children[hoistStart:]...)
+	if len(kept) == 0 {
+		return node, nil, false
+	}
+
+	newBody := cloneNodeInArena(arena, body)
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(kept))
+		copy(buf, kept)
+		kept = buf
+	}
+	newBody.children = kept
+	newBody.fieldIDs = nil
+	lastKept := kept[len(kept)-1]
+	newBody.endByte = lastKept.endByte
+	newBody.endPoint = lastKept.endPoint
+
+	newFn := cloneNodeInArena(arena, node)
+	fnChildren := make([]*Node, len(node.children))
+	copy(fnChildren, node.children)
+	fnChildren[bodyIndex] = newBody
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(fnChildren))
+		copy(buf, fnChildren)
+		fnChildren = buf
+	}
+	newFn.children = fnChildren
+	newFn.endByte = newBody.endByte
+	newFn.endPoint = newBody.endPoint
+	return newFn, hoisted, true
+}
+
+func pythonSyntheticClassFieldIDs(arena *nodeArena, childCount int, hasArgList bool, lang *Language) []FieldID {
+	fieldIDs := make([]FieldID, childCount)
+	if arena != nil {
+		fieldIDs = arena.allocFieldIDSlice(childCount)
+	}
+	if fid, ok := lang.FieldByName("name"); ok && childCount > 1 {
+		fieldIDs[1] = fid
+	}
+	if hasArgList {
+		if fid, ok := lang.FieldByName("superclasses"); ok && childCount > 2 {
+			fieldIDs[2] = fid
+		}
+		if fid, ok := lang.FieldByName("body"); ok && childCount > 4 {
+			fieldIDs[4] = fid
+		}
+		return fieldIDs
+	}
+	if fid, ok := lang.FieldByName("body"); ok && childCount > 3 {
+		fieldIDs[3] = fid
+	}
+	return fieldIDs
+}
+
+func pythonSyntheticIfFieldIDs(arena *nodeArena, childCount int, lang *Language) []FieldID {
+	fieldIDs := make([]FieldID, childCount)
+	if arena != nil {
+		fieldIDs = arena.allocFieldIDSlice(childCount)
+	}
+	if fid, ok := lang.FieldByName("condition"); ok && childCount > 1 {
+		fieldIDs[1] = fid
+	}
+	if fid, ok := lang.FieldByName("consequence"); ok && childCount > 3 {
+		fieldIDs[3] = fid
+	}
+	return fieldIDs
+}
+
+func pythonModuleChildrenLookComplete(nodes []*Node, lang *Language) bool {
+	if len(nodes) == 0 {
+		return false
+	}
+	seen := 0
+	for _, n := range nodes {
+		if n == nil || n.isExtra {
+			continue
+		}
+		if n.IsNamed() {
+			seen++
+			continue
+		}
+		switch n.Type(lang) {
+		case "_simple_statements":
+			seen++
+		default:
+			return false
+		}
+	}
+	return seen > 0
+}
+
+func dropZeroWidthUnnamedTail(nodes []*Node, lang *Language) []*Node {
+	for len(nodes) > 0 {
+		last := nodes[len(nodes)-1]
+		if last == nil {
+			nodes = nodes[:len(nodes)-1]
+			continue
+		}
+		if last.IsNamed() || last.startByte != last.endByte || len(last.children) > 0 {
+			break
+		}
+		if lang != nil && last.Type(lang) != "" {
+			break
+		}
+		nodes = nodes[:len(nodes)-1]
+	}
+	return nodes
+}
+
+func symbolByName(lang *Language, name string) (Symbol, bool) {
+	if lang == nil {
+		return 0, false
+	}
+	for i, symName := range lang.SymbolNames {
+		if symName == name {
+			return Symbol(i), true
+		}
+	}
+	return 0, false
 }
