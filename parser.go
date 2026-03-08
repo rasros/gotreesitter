@@ -832,6 +832,10 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				named := p.isNamedSymbol(tok.Symbol)
 				leaf := newLeafNodeInArena(arena, tok.Symbol, named,
 					tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
+				if tok.Missing {
+					leaf.isMissing = true
+					leaf.hasError = true
+				}
 				leaf.isExtra = true
 				leaf.preGotoState = currentState
 				leaf.parseState = currentState
