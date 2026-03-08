@@ -389,6 +389,11 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		defer closer.Close()
 	}
 	scratch := acquireParserScratch()
+	if deferParentLinks {
+		scratch.gss.initialCap = fullParseGSSNodeSlabCap
+	} else {
+		scratch.gss.initialCap = defaultGSSNodeSlabCap
+	}
 	defer releaseParserScratch(scratch, deferParentLinks)
 	trackChildErrors := !deferParentLinks
 

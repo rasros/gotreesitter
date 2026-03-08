@@ -1,7 +1,8 @@
 package gotreesitter
 
 const (
-	defaultGSSNodeSlabCap = 4 * 1024
+	defaultGSSNodeSlabCap   = 4 * 1024
+	fullParseGSSNodeSlabCap = 32 * 1024
 	maxRetainedGSSNodes   = 256 * 1024
 )
 
@@ -21,6 +22,7 @@ type gssStack struct {
 type gssScratch struct {
 	slabs      []gssNodeSlab
 	slabCursor int
+	initialCap int
 	skipClear  bool
 }
 
@@ -183,7 +185,11 @@ func (s *gssScratch) allocNode(entry stackEntry, prev *gssNode, depth int) *gssN
 		return &gssNode{entry: entry, prev: prev, depth: depth, hash: hash}
 	}
 	if len(s.slabs) == 0 {
-		s.slabs = append(s.slabs, gssNodeSlab{data: make([]gssNode, defaultGSSNodeSlabCap)})
+		capacity := defaultGSSNodeSlabCap
+		if s.initialCap > capacity {
+			capacity = s.initialCap
+		}
+		s.slabs = append(s.slabs, gssNodeSlab{data: make([]gssNode, capacity)})
 		s.slabCursor = 0
 	}
 	if s.slabCursor < 0 || s.slabCursor >= len(s.slabs) {
