@@ -275,6 +275,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeCooklangTrailingStepTail(root, source, lang)
 	normalizeFortranStatementLineBreaks(root, source, lang)
 	normalizeHaskellImportsSpan(root, source, lang)
+	normalizeNginxAttributeLineBreaks(root, source, lang)
 	normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	normalizeScalaTrailingCommentOwnership(root, source, lang)
 	normalizeScalaFunctionModifierFields(root, lang)
@@ -435,6 +436,27 @@ func normalizeFortranStatementLineBreaks(root *Node, source []byte, lang *Langua
 				if end := lineBreakEndAt(source, cur.endByte, next.startByte); end > cur.endByte {
 					extendNodeEndTo(cur, end, source)
 				}
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeNginxAttributeLineBreaks(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "nginx" || len(source) == 0 {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "attribute" {
+			if end := lineBreakEndAt(source, n.endByte, uint32(len(source))); end > n.endByte {
+				extendNodeEndTo(n, end, source)
 			}
 		}
 		for _, child := range n.children {

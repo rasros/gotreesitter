@@ -178,3 +178,43 @@ func TestCobolLeadingAreaStartMatchesC(t *testing.T) {
 		t.Fatalf("cobol identification_division.StartByte=%d, want %d", got, want)
 	}
 }
+
+func TestNginxAttributesCarryTrailingLineBreaks(t *testing.T) {
+	const src = "http {\n  server {\n    listen 80;\n    server_name example.com;\n  }\n}\n"
+	tree, lang := parseByLanguageName(t, "nginx", src)
+	root := tree.RootNode()
+	if root.HasError() {
+		t.Fatalf("unexpected nginx parse error: %s", root.SExpr(lang))
+	}
+	if root.ChildCount() != 1 {
+		t.Fatalf("nginx root childCount=%d, want 1", root.ChildCount())
+	}
+	httpAttr := root.Child(0)
+	if httpAttr == nil || httpAttr.Type(lang) != "attribute" {
+		t.Fatalf("nginx child=%v, want attribute", httpAttr)
+	}
+	if got, want := httpAttr.EndByte(), root.EndByte(); got != want {
+		t.Fatalf("nginx outer attribute.EndByte=%d, want root.EndByte=%d", got, want)
+	}
+	serverAttr := httpAttr.Child(1).Child(1)
+	if serverAttr == nil || serverAttr.Type(lang) != "attribute" {
+		t.Fatalf("nginx nested attribute=%v, want attribute", serverAttr)
+	}
+	if got, want := serverAttr.EndByte(), uint32(66); got != want {
+		t.Fatalf("nginx server attribute.EndByte=%d, want %d", got, want)
+	}
+	listenAttr := serverAttr.Child(1).Child(1)
+	if listenAttr == nil || listenAttr.Type(lang) != "attribute" {
+		t.Fatalf("nginx listen attribute=%v, want attribute", listenAttr)
+	}
+	if got, want := listenAttr.EndByte(), uint32(33); got != want {
+		t.Fatalf("nginx listen attribute.EndByte=%d, want %d", got, want)
+	}
+	nameAttr := serverAttr.Child(1).Child(2)
+	if nameAttr == nil || nameAttr.Type(lang) != "attribute" {
+		t.Fatalf("nginx server_name attribute=%v, want attribute", nameAttr)
+	}
+	if got, want := nameAttr.EndByte(), uint32(62); got != want {
+		t.Fatalf("nginx server_name attribute.EndByte=%d, want %d", got, want)
+	}
+}
