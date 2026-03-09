@@ -150,3 +150,56 @@ func TestTrackZeroWidthExternalRepeatableSymbolClearsLoopGuard(t *testing.T) {
 		t.Fatalf("len(extZeroTried) = %d, want 0", got)
 	}
 }
+
+func TestNextGLRUnionDFATokenPrefersVisibleTokenOnExactTie(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"end", "]", "_special_character"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: "]", Visible: true, Named: false},
+			{Name: "_special_character", Visible: false, Named: true},
+		},
+		SymbolCount:     3,
+		TokenCount:      3,
+		StateCount:      3,
+		LargeStateCount: 3,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: ']', Hi: ']', NextState: 3}}},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: ']', Hi: ']', NextState: 4}}},
+			{AcceptToken: 1, Default: -1, EOF: -1},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 2},
+			{LexState: 1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0},
+			{0, 0, 1},
+			{0, 1, 0},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte("]")),
+		language:          lang,
+		state:             1,
+		glrStates:         []StateID{1, 2},
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+
+	tok, ok := d.nextGLRUnionDFAToken()
+	if !ok {
+		t.Fatal("nextGLRUnionDFAToken returned ok=false, want true")
+	}
+	if got, want := tok.Symbol, Symbol(1); got != want {
+		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+}

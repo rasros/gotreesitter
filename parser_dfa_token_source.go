@@ -128,6 +128,8 @@ func (d *dfaTokenSource) Next() Token {
 		if extTok, ok := d.nextExternalToken(); ok {
 			tok = extTok
 			tokenFromExternal = true
+		} else if glrTok, ok := d.nextGLRUnionDFAToken(); ok {
+			tok = glrTok
 		} else {
 			tok = d.nextDFAToken()
 		}
@@ -292,6 +294,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	bestEndPos := startPos
 	bestEndRow := startRow
 	bestEndCol := startCol
+	bestVisible := false
 
 	// Deduplicate lex states to avoid redundant scans.
 	seen := make(map[uint16]struct{}, len(d.glrStates))
@@ -329,10 +332,12 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 		candEndPos := d.lexer.pos
 		candEndRow := d.lexer.row
 		candEndCol := d.lexer.col
+		candVisible := int(candTok.Symbol) < len(d.language.SymbolMetadata) && d.language.SymbolMetadata[candTok.Symbol].Visible
 		better := !bestFound ||
 			score > bestScore ||
 			(score == bestScore && candTok.EndByte > bestTok.EndByte) ||
-			(score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos)
+			(score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos) ||
+			(score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos == bestEndPos && candVisible && !bestVisible)
 		if better {
 			bestFound = true
 			bestScore = score
@@ -340,6 +345,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			bestEndPos = candEndPos
 			bestEndRow = candEndRow
 			bestEndCol = candEndCol
+			bestVisible = candVisible
 		}
 	}
 
