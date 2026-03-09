@@ -577,6 +577,18 @@ func countEligibleFieldTargets(children []*Node, fieldIDs []FieldID, start, end 
 	return count
 }
 
+func fieldIDAppearsLater(fieldIDs []FieldID, start int, fid FieldID) bool {
+	if fid == 0 || start < 0 {
+		return false
+	}
+	for i := start; i < len(fieldIDs); i++ {
+		if fieldIDs[i] == fid {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint16, arena *nodeArena) ([]*Node, []FieldID, []uint8) {
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
@@ -684,8 +696,10 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 				if inherited {
 					source = fieldSourceInherited
 				}
-				applyFieldToFlattenedSpan(children, fieldIDs, fieldSources, spanStart, fieldEnd, fid, source, true)
-				normalizeMixedSourceFieldSpan(fieldIDs, fieldSources, spanStart, fieldEnd)
+				if !inherited || !fieldIDAppearsLater(rawFieldIDs, structuralChildIndex, fid) {
+					applyFieldToFlattenedSpan(children, fieldIDs, fieldSources, spanStart, fieldEnd, fid, source, true)
+					normalizeMixedSourceFieldSpan(fieldIDs, fieldSources, spanStart, fieldEnd)
+				}
 			}
 		}
 	}
@@ -964,6 +978,11 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 					fieldSources[j] = source
 				}
 			}
+		}
+	}
+	if inherited && !preferNamed && !alreadyAssigned {
+		if countEligibleNamedFieldTargets(children, fieldIDs, start, end) > 1 {
+			return
 		}
 	}
 	for j := start; !alreadyAssigned && j < end; j++ {
