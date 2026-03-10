@@ -412,6 +412,13 @@ func (d *dfaTokenSource) preferSpecificTokenOnExactMatch(candTok Token, candEndP
 			return bestIsCapture && !candIsCapture
 		}
 	}
+	if d.sameSymbolName(candTok.Symbol, bestTok.Symbol) {
+		candSpecificity := d.activeActionSpecificity(candTok.Symbol)
+		bestSpecificity := d.activeActionSpecificity(bestTok.Symbol)
+		if candSpecificity != bestSpecificity {
+			return candSpecificity > bestSpecificity
+		}
+	}
 	candMeta, candOK := d.symbolMetadata(candTok.Symbol)
 	bestMeta, bestOK := d.symbolMetadata(bestTok.Symbol)
 	if !candOK || !bestOK {
@@ -421,6 +428,69 @@ func (d *dfaTokenSource) preferSpecificTokenOnExactMatch(candTok Token, candEndP
 		return candMeta.Visible
 	}
 	return candMeta.Visible && !candMeta.Named && bestMeta.Visible && bestMeta.Named
+}
+
+func (d *dfaTokenSource) sameSymbolName(a, b Symbol) bool {
+	if d == nil || d.language == nil {
+		return false
+	}
+	if am, ok := d.symbolMetadata(a); ok {
+		if bm, ok := d.symbolMetadata(b); ok && am.Name != "" && bm.Name != "" {
+			return am.Name == bm.Name
+		}
+	}
+	ai := int(a)
+	bi := int(b)
+	if ai < 0 || bi < 0 || ai >= len(d.language.SymbolNames) || bi >= len(d.language.SymbolNames) {
+		return false
+	}
+	return d.language.SymbolNames[ai] == d.language.SymbolNames[bi]
+}
+
+func (d *dfaTokenSource) activeActionSpecificity(sym Symbol) int {
+	if d == nil || d.language == nil || d.lookupActionIndex == nil || sym == 0 {
+		return 0
+	}
+	type actionStats struct {
+		maxDyn      int
+		totalDyn    int
+		maxActions  int
+		totalActs   int
+		supporting  int
+	}
+	stats := actionStats{}
+	seen := map[StateID]struct{}{}
+	visit := func(st StateID) {
+		if _, ok := seen[st]; ok {
+			return
+		}
+		seen[st] = struct{}{}
+		idx := d.lookupActionIndex(st, sym)
+		if idx == 0 || int(idx) >= len(d.language.ParseActions) {
+			return
+		}
+		acts := d.language.ParseActions[idx].Actions
+		if len(acts) == 0 {
+			return
+		}
+		stats.supporting++
+		if len(acts) > stats.maxActions {
+			stats.maxActions = len(acts)
+		}
+		stats.totalActs += len(acts)
+		for _, act := range acts {
+			dyn := int(act.DynamicPrecedence)
+			if dyn > stats.maxDyn {
+				stats.maxDyn = dyn
+			}
+			stats.totalDyn += dyn
+		}
+	}
+	visit(d.state)
+	for _, st := range d.glrStates {
+		visit(st)
+	}
+	return (((stats.maxDyn*1024)+stats.totalDyn)*1024 + stats.maxActions*64 + stats.totalActs*4 + stats.supporting)
 }
 
 func (d *dfaTokenSource) symbolMetadata(sym Symbol) (SymbolMetadata, bool) {

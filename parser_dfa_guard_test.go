@@ -378,3 +378,67 @@ func TestNextGLRUnionDFATokenPrefersVisibleTokenOverHiddenFallback(t *testing.T)
 		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
 	}
 }
+
+func TestNextGLRUnionDFATokenPrefersHigherActionSpecificityOnSameLexeme(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"end", "identifier", ">", "gt_template"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: "identifier", Visible: true, Named: true},
+			{Name: ">", Visible: true, Named: false},
+			{Name: ">", Visible: true, Named: false},
+		},
+		SymbolCount:     4,
+		TokenCount:      4,
+		StateCount:      5,
+		LargeStateCount: 5,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 5}}},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 6}}},
+			{AcceptToken: 0, Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+			{AcceptToken: 3, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 1},
+			{LexState: 2},
+			{LexState: 0},
+			{LexState: 0},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0, 0},
+			{0, 0, 1, 0},
+			{0, 0, 1, 2},
+			{0, 0, 0, 0},
+			{0, 0, 0, 0},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 3}}},
+			{Actions: []ParseAction{
+				{Type: ParseActionReduce, Symbol: 1, ChildCount: 1, DynamicPrecedence: 1},
+				{Type: ParseActionReduce, Symbol: 1, ChildCount: 1},
+			}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte(">")),
+		language:          lang,
+		state:             1,
+		glrStates:         []StateID{1, 2},
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+
+	tok, ok := d.nextGLRUnionDFAToken()
+	if !ok {
+		t.Fatal("nextGLRUnionDFAToken returned ok=false, want true")
+	}
+	if got, want := tok.Symbol, Symbol(3); got != want {
+		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+}
