@@ -51,6 +51,8 @@ type ExtractedGrammar struct {
 
 	// External token index -> grammar symbol ID.
 	ExternalSymbols []uint16
+	// Optional external lex state validity table from ts_external_scanner_states.
+	ExternalLexStates [][]bool
 
 	// ABI 15: reserved words (flat array, 0-terminated per set).
 	ReservedWords          []uint16
@@ -193,6 +195,9 @@ func ExtractGrammar(source string) (*ExtractedGrammar, error) {
 	if g.ExternalTokenCount > 0 {
 		if err := extractExternalSymbols(source, g); err != nil {
 			// Not fatal: grammars without external scanners will omit this.
+		}
+		if err := extractExternalLexStates(source, g); err != nil {
+			// Not fatal: some grammars omit the table and fall back to action probing.
 		}
 	}
 
@@ -2362,6 +2367,76 @@ func extractExternalSymbols(source string, g *ExtractedGrammar) error {
 		return err
 	}
 	g.ExternalSymbols = parseIndexedSymbolArray(body, g.ExternalTokenCount, g.enumValues)
+	return nil
+}
+
+// extractExternalLexStates parses ts_external_scanner_states[][].
+func extractExternalLexStates(source string, g *ExtractedGrammar) error {
+	if g == nil || g.ExternalTokenCount == 0 {
+		return nil
+	}
+
+	dimRe := regexp.MustCompile(`ts_external_scanner_states\[(\d+)\]\[[^\]]+\]`)
+	dm := dimRe.FindStringSubmatch(source)
+	if dm == nil {
+		return fmt.Errorf("external lex states table not found")
+	}
+	rowCount, err := strconv.Atoi(dm[1])
+	if err != nil || rowCount <= 0 {
+		return fmt.Errorf("invalid external lex states row count %q", dm[1])
+	}
+
+	body, err := findArrayBody(source, "ts_external_scanner_states")
+	if err != nil {
+		return err
+	}
+
+	table := make([][]bool, rowCount)
+	for i := range table {
+		table[i] = make([]bool, g.ExternalTokenCount)
+	}
+
+	rowRe := regexp.MustCompile(`\[(\w+)\]\s*=\s*\{`)
+	locs := rowRe.FindAllStringSubmatchIndex(body, -1)
+	for _, loc := range locs {
+		rowName := body[loc[2]:loc[3]]
+		rowIdx, ok := resolveIndexedName(rowName, g.enumValues)
+		if !ok || rowIdx < 0 || rowIdx >= rowCount {
+			continue
+		}
+
+		braceStart := loc[1] - 1
+		depth := 0
+		end := -1
+		for i := braceStart; i < len(body); i++ {
+			switch body[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = i
+					i = len(body)
+				}
+			}
+		}
+		if end < 0 {
+			return fmt.Errorf("unterminated external lex state row %q", rowName)
+		}
+
+		rowBody := body[braceStart+1 : end]
+		entryRe := regexp.MustCompile(`\[(\w+)\]\s*=\s*true`)
+		entries := entryRe.FindAllStringSubmatch(rowBody, -1)
+		for _, m := range entries {
+			colIdx, ok := resolveIndexedName(m[1], g.enumValues)
+			if !ok || colIdx < 0 || colIdx >= g.ExternalTokenCount {
+				continue
+			}
+			table[rowIdx][colIdx] = true
+		}
+	}
+
+	g.ExternalLexStates = table
 	return nil
 }
 

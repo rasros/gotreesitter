@@ -40,6 +40,7 @@ const maxConsecutiveZeroWidthTokens = 4
 const maxConsecutiveZeroWidthTokensExternal = 128
 const maxConsecutiveZeroWidthTokensRepeatableExternal = 4096
 const noLookaheadLexState = ^uint16(0)
+const externalScannerSerializationBufferSize = 1024
 
 var dfaTokenSourcePool = sync.Pool{
 	New: func() any {
@@ -632,7 +633,6 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	if !anyValid {
 		return Token{}, false
 	}
-
 	// Zero-width external token loop prevention: exclude external token
 	// indices that were already produced as zero-width tokens at this same
 	// (position, state) pair. When the parser has no action for a zero-width
@@ -672,7 +672,7 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	}
 
 	el := newExternalLexer(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
-	if !RunExternalScanner(d.language, d.externalPayload, el, valid) {
+	if !d.runExternalScannerWithRetry(el, valid) {
 		return Token{}, false
 	}
 	tok, ok := el.token()
@@ -686,6 +686,83 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	d.lexer.row = tok.EndPoint.Row
 	d.lexer.col = tok.EndPoint.Column
 	return tok, true
+}
+
+func (d *dfaTokenSource) runExternalScannerWithRetry(el *ExternalLexer, valid []bool) bool {
+	if d == nil || d.language == nil || d.language.ExternalScanner == nil || el == nil {
+		return false
+	}
+	snapshot := d.captureExternalScannerState()
+	if RunExternalScanner(d.language, d.externalPayload, el, valid) {
+		return true
+	}
+	if !el.hasResult {
+		d.restoreExternalScannerState(snapshot)
+		return false
+	}
+	masked := append([]bool(nil), valid...)
+	for {
+		idx := d.externalSymbolIndex(el.resultSymbol)
+		if idx < 0 || idx >= len(masked) || !masked[idx] {
+			d.restoreExternalScannerState(snapshot)
+			return false
+		}
+		masked[idx] = false
+		anyValid := false
+		for _, ok := range masked {
+			if ok {
+				anyValid = true
+				break
+			}
+		}
+		if !anyValid {
+			d.restoreExternalScannerState(snapshot)
+			return false
+		}
+
+		d.restoreExternalScannerState(snapshot)
+		retryLexer := newExternalLexer(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
+		if RunExternalScanner(d.language, d.externalPayload, retryLexer, masked) {
+			*el = *retryLexer
+			return true
+		}
+		if !retryLexer.hasResult {
+			d.restoreExternalScannerState(snapshot)
+			return false
+		}
+		el = retryLexer
+	}
+}
+
+func (d *dfaTokenSource) captureExternalScannerState() []byte {
+	if d == nil || d.language == nil || d.language.ExternalScanner == nil {
+		return nil
+	}
+	buf := make([]byte, externalScannerSerializationBufferSize)
+	n := d.language.ExternalScanner.Serialize(d.externalPayload, buf)
+	if n <= 0 {
+		return nil
+	}
+	return append([]byte(nil), buf[:n]...)
+}
+
+func (d *dfaTokenSource) restoreExternalScannerState(snapshot []byte) {
+	if d == nil || d.language == nil || d.language.ExternalScanner == nil {
+		return
+	}
+	d.language.ExternalScanner.Deserialize(d.externalPayload, snapshot)
+}
+
+func (d *dfaTokenSource) externalSymbolIndex(sym Symbol) int {
+	if d == nil || d.language == nil {
+		return -1
+	}
+	for i, ext := range d.language.ExternalSymbols {
+		if ext == sym {
+			return i
+		}
+	}
+	return -1
 }
 
 func (d *dfaTokenSource) trackZeroWidthExternalToken(tok Token) {

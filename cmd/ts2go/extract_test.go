@@ -713,6 +713,44 @@ static const TSSymbol ts_external_scanner_symbol_map[2] = {
 	}
 }
 
+func TestExtractExternalLexStates(t *testing.T) {
+	src := `
+enum ts_external_token_identifiers {
+  ext_tok_one = 0,
+  ext_tok_two = 1,
+  ext_tok_three = 2,
+};
+static const bool ts_external_scanner_states[4][EXTERNAL_TOKEN_COUNT] = {
+  [1] = {
+    [ext_tok_one] = true,
+    [ext_tok_three] = true,
+  },
+  [3] = {
+    [ext_tok_two] = true,
+  },
+};
+`
+	g := &ExtractedGrammar{
+		ExternalTokenCount: 3,
+		enumValues:         extractEnum(src),
+	}
+	if err := extractExternalLexStates(src, g); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ExternalLexStates) != 4 {
+		t.Fatalf("len(ExternalLexStates) = %d, want 4", len(g.ExternalLexStates))
+	}
+	if !g.ExternalLexStates[1][0] || g.ExternalLexStates[1][1] || !g.ExternalLexStates[1][2] {
+		t.Fatalf("row 1 = %v, want [true false true]", g.ExternalLexStates[1])
+	}
+	if g.ExternalLexStates[2][0] || g.ExternalLexStates[2][1] || g.ExternalLexStates[2][2] {
+		t.Fatalf("row 2 = %v, want all false", g.ExternalLexStates[2])
+	}
+	if g.ExternalLexStates[3][0] || !g.ExternalLexStates[3][1] || g.ExternalLexStates[3][2] {
+		t.Fatalf("row 3 = %v, want [false true false]", g.ExternalLexStates[3])
+	}
+}
+
 func TestExtractGrammarFull(t *testing.T) {
 	g, err := ExtractGrammar(miniParserC)
 	if err != nil {
@@ -749,9 +787,13 @@ func TestGenerateEmbeddedGo(t *testing.T) {
 	}
 
 	g.ExternalSymbols = []uint16{5}
+	g.ExternalLexStates = [][]bool{{false}, {true}}
 	lang := BuildLanguage(g)
 	if lang == nil {
 		t.Fatal("BuildLanguage returned nil")
+	}
+	if len(lang.ExternalLexStates) != 2 || !lang.ExternalLexStates[1][0] {
+		t.Fatalf("lang.ExternalLexStates = %v, want [[false] [true]]", lang.ExternalLexStates)
 	}
 	blob, err := EncodeLanguageBlob(lang)
 	if err != nil {

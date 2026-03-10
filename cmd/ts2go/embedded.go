@@ -117,6 +117,12 @@ func BuildLanguage(g *ExtractedGrammar) *gotreesitter.Language {
 			lang.ExternalSymbols[i] = gotreesitter.Symbol(sym)
 		}
 	}
+	if len(g.ExternalLexStates) > 0 {
+		lang.ExternalLexStates = make([][]bool, len(g.ExternalLexStates))
+		for i, row := range g.ExternalLexStates {
+			lang.ExternalLexStates[i] = append([]bool(nil), row...)
+		}
+	}
 
 	// ABI 15: reserved words
 	if g.MaxReservedWordSetSize > 0 {
