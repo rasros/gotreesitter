@@ -1739,7 +1739,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 			}
 			if namedTargets == 1 && totalTargets > 1 {
 				for k := start; k < end; k++ {
-					if children[k] == nil || children[k].isExtra || fieldIDs[k] != 0 {
+					if children[k] == nil || children[k].isExtra || children[k].isMissing || fieldIDs[k] != 0 {
 						continue
 					}
 					fieldIDs[k] = fid
