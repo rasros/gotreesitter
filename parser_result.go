@@ -334,6 +334,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeElixirNestedCallTargetFields(root, lang)
 	normalizePHPSingletonTypeWrappers(root, lang)
 	normalizePHPStaticFunctionFragments(root, source, lang)
+	normalizePythonStringContinuationEscapes(root, source, lang)
 	normalizePerlJoinAssignmentLists(root, source, lang)
 	normalizePerlPushExpressionLists(root, source, lang)
 	normalizePerlReturnExpressionLists(root, lang)
@@ -5055,6 +5056,12 @@ func collapsePythonRootFragments(nodes []*Node, arena *nodeArena, lang *Language
 			nodes = dropZeroWidthUnnamedTail(nodes, lang)
 			continue
 		}
+		next, changed = collapsePythonFunctionFragments(nodes, arena, lang)
+		if changed {
+			nodes = next
+			nodes = dropZeroWidthUnnamedTail(nodes, lang)
+			continue
+		}
 		next, changed = collapsePythonTerminalIfSuffix(nodes, arena, lang)
 		if changed {
 			nodes = next
@@ -5098,11 +5105,23 @@ func collapsePythonClassFragments(nodes []*Node, arena *nodeArena, lang *Languag
 		if colonNode == nil || indentNode == nil || bodyNode == nil {
 			continue
 		}
-		if colonNode.Type(lang) != ":" || indentNode.Type(lang) != "_indent" || bodyNode.Type(lang) != "module_repeat1" {
+		if colonNode.Type(lang) != ":" || indentNode.Type(lang) != "_indent" {
 			continue
 		}
 
-		bodyChildren := flattenPythonModuleRepeat(bodyNode, nil, lang)
+		bodyStart := j + 4
+		bodyEnd := bodyStart + 1
+		var bodyChildren []*Node
+		if bodyNode.Type(lang) == "module_repeat1" {
+			bodyChildren = flattenPythonModuleRepeat(bodyNode, nil, lang)
+		} else {
+			var ok bool
+			bodyChildren, bodyEnd, ok = pythonCollectIndentedSuite(nodes, bodyStart, classNode.startPoint.Column)
+			if !ok {
+				continue
+			}
+			bodyChildren = collapsePythonRootFragments(bodyChildren, arena, lang)
+		}
 		if len(bodyChildren) == 0 {
 			continue
 		}
@@ -5112,7 +5131,11 @@ func collapsePythonClassFragments(nodes []*Node, arena *nodeArena, lang *Languag
 			bodyChildren = buf
 		}
 		blockNode := newParentNodeInArena(arena, blockSym, true, bodyChildren, nil, 0)
-		blockNode.hasError = false
+		if repairedBlock, changed := repairPythonBlock(blockNode, arena, lang, true); changed {
+			blockNode = repairedBlock
+		} else {
+			blockNode.hasError = false
+		}
 
 		classChildren := make([]*Node, 0, 5)
 		classChildren = append(classChildren, classNode, nameNode)
@@ -5129,10 +5152,10 @@ func collapsePythonClassFragments(nodes []*Node, arena *nodeArena, lang *Languag
 		classDef := newParentNodeInArena(arena, classDefSym, true, classChildren, classFieldIDs, 0)
 		classDef.hasError = false
 
-		out := make([]*Node, 0, len(nodes)-(j+5-i)+1)
+		out := make([]*Node, 0, len(nodes)-(bodyEnd-i)+1)
 		out = append(out, nodes[:i]...)
 		out = append(out, classDef)
-		out = append(out, nodes[j+5:]...)
+		out = append(out, nodes[bodyEnd:]...)
 		if arena != nil {
 			buf := arena.allocNodeSlice(len(out))
 			copy(buf, out)
@@ -5143,6 +5166,74 @@ func collapsePythonClassFragments(nodes []*Node, arena *nodeArena, lang *Languag
 	return nodes, false
 }
 
+func collapsePythonFunctionFragments(nodes []*Node, arena *nodeArena, lang *Language) ([]*Node, bool) {
+	if len(nodes) < 6 || lang == nil || lang.Name != "python" {
+		return nodes, false
+	}
+	functionDefSym, ok := symbolByName(lang, "function_definition")
+	if !ok {
+		return nodes, false
+	}
+	blockSym, ok := symbolByName(lang, "block")
+	if !ok {
+		return nodes, false
+	}
+	for i := 0; i < len(nodes)-5; i++ {
+		defNode := nodes[i]
+		nameNode := nodes[i+1]
+		paramsNode := nodes[i+2]
+		colonNode := nodes[i+3]
+		indentNode := nodes[i+4]
+		if defNode == nil || nameNode == nil || paramsNode == nil || colonNode == nil || indentNode == nil {
+			continue
+		}
+		if defNode.Type(lang) != "def" || nameNode.Type(lang) != "identifier" || paramsNode.Type(lang) != "parameters" {
+			continue
+		}
+		if colonNode.Type(lang) != ":" || indentNode.Type(lang) != "_indent" {
+			continue
+		}
+		bodyChildren, bodyEnd, ok := pythonCollectIndentedSuite(nodes, i+5, defNode.startPoint.Column)
+		if !ok {
+			continue
+		}
+		bodyChildren = collapsePythonRootFragments(bodyChildren, arena, lang)
+		if len(bodyChildren) == 0 {
+			continue
+		}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(bodyChildren))
+			copy(buf, bodyChildren)
+			bodyChildren = buf
+		}
+		blockNode := newParentNodeInArena(arena, blockSym, true, bodyChildren, nil, 0)
+		if repairedBlock, changed := repairPythonBlock(blockNode, arena, lang, false); changed {
+			blockNode = repairedBlock
+		} else {
+			blockNode.hasError = false
+		}
+		fnChildren := []*Node{defNode, nameNode, paramsNode, colonNode, blockNode}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(fnChildren))
+			copy(buf, fnChildren)
+			fnChildren = buf
+		}
+		fn := newParentNodeInArena(arena, functionDefSym, true, fnChildren, pythonSyntheticFunctionFieldIDs(arena, len(fnChildren), lang), 0)
+		fn.hasError = false
+
+		out := make([]*Node, 0, len(nodes)-(bodyEnd-i)+1)
+		out = append(out, nodes[:i]...)
+		out = append(out, fn)
+		out = append(out, nodes[bodyEnd:]...)
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(out))
+			copy(buf, out)
+			out = buf
+		}
+		return out, true
+	}
+	return nodes, false
+}
 func collapsePythonTerminalIfSuffix(nodes []*Node, arena *nodeArena, lang *Language) ([]*Node, bool) {
 	if len(nodes) < 6 {
 		return nodes, false
@@ -5216,6 +5307,28 @@ func flattenPythonModuleRepeat(node *Node, out []*Node, lang *Language) []*Node 
 		out = append(out, node)
 	}
 	return out
+}
+
+func pythonCollectIndentedSuite(nodes []*Node, start int, baseColumn uint32) ([]*Node, int, bool) {
+	if start >= len(nodes) {
+		return nil, start, false
+	}
+	end := start
+	for end < len(nodes) {
+		cur := nodes[end]
+		if cur == nil {
+			end++
+			continue
+		}
+		if cur.startPoint.Column <= baseColumn {
+			break
+		}
+		end++
+	}
+	if end == start {
+		return nil, start, false
+	}
+	return nodes[start:end], end, true
 }
 
 func normalizePythonModuleChildren(nodes []*Node, arena *nodeArena, lang *Language) []*Node {
@@ -5485,6 +5598,13 @@ func repairPythonBlock(node *Node, arena *nodeArena, lang *Language, allowHoist 
 			case "_indent", "_dedent":
 				changed = true
 				continue
+			case "_simple_statements":
+				flat := flattenPythonSimpleStatements(cur, nil, lang)
+				if len(flat) > 0 {
+					changed = true
+					pending = append(append([]*Node{}, flat...), pending...)
+					continue
+				}
 			}
 		}
 
@@ -5544,7 +5664,6 @@ func repairPythonBlock(node *Node, arena *nodeArena, lang *Language, allowHoist 
 	}
 	return cloned, true
 }
-
 func pythonBlockStartAnchor(children []*Node, lang *Language) *Node {
 	for _, child := range children {
 		if child == nil {
@@ -5664,6 +5783,105 @@ func splitPythonOvernestedFunction(node *Node, arena *nodeArena, lang *Language)
 	return newFn, hoisted, true
 }
 
+func flattenPythonSimpleStatements(node *Node, out []*Node, lang *Language) []*Node {
+	if node == nil {
+		return out
+	}
+	switch node.Type(lang) {
+	case "_simple_statements", "_simple_statements_repeat1":
+		for _, child := range node.children {
+			out = flattenPythonSimpleStatements(child, out, lang)
+		}
+		return out
+	case "expression_statement":
+		if len(node.children) == 1 && node.children[0] != nil && node.children[0].IsNamed() {
+			return append(out, node.children[0])
+		}
+	}
+	if node.IsNamed() || (lang != nil && node.Type(lang) == ";") {
+		return append(out, node)
+	}
+	return out
+}
+
+func normalizePythonStringContinuationEscapes(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "python" || len(source) == 0 {
+		return
+	}
+	escapeSym, ok := symbolByName(lang, "escape_sequence")
+	if !ok {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "string_content" && n.startByte < n.endByte && int(n.endByte) <= len(source) {
+			n.children = addPythonContinuationEscapes(n, source, escapeSym)
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func addPythonContinuationEscapes(node *Node, source []byte, escapeSym Symbol) []*Node {
+	if node == nil || node.startByte >= node.endByte || int(node.endByte) > len(source) {
+		return node.children
+	}
+	children := node.children
+	changed := false
+	for i := int(node.startByte); i+1 < int(node.endByte); i++ {
+		if source[i] != '\\' {
+			continue
+		}
+		end := i + 2
+		if source[i+1] == '\r' && end < int(node.endByte) && source[end] == '\n' {
+			end++
+		} else if source[i+1] != '\n' {
+			continue
+		}
+		found := false
+		for _, child := range children {
+			if child != nil && child.startByte == uint32(i) && child.endByte == uint32(end) && child.symbol == escapeSym {
+				found = true
+				break
+			}
+		}
+		if found {
+			i = end - 1
+			continue
+		}
+		startPoint := advancePointByBytes(Point{}, source[:i])
+		esc := newLeafNodeInArena(node.ownerArena, escapeSym, true, uint32(i), uint32(end), startPoint, advancePointByBytes(startPoint, source[i:end]))
+		insertAt := len(children)
+		for idx, child := range children {
+			if child == nil || child.startByte > uint32(i) {
+				insertAt = idx
+				break
+			}
+		}
+		next := make([]*Node, 0, len(children)+1)
+		next = append(next, children[:insertAt]...)
+		next = append(next, esc)
+		next = append(next, children[insertAt:]...)
+		if node.ownerArena != nil {
+			buf := node.ownerArena.allocNodeSlice(len(next))
+			copy(buf, next)
+			next = buf
+		}
+		children = next
+		changed = true
+		i = end - 1
+	}
+	if !changed {
+		return node.children
+	}
+	return children
+}
+
 func pythonSyntheticClassFieldIDs(arena *nodeArena, childCount int, hasArgList bool, lang *Language) []FieldID {
 	fieldIDs := make([]FieldID, childCount)
 	if arena != nil {
@@ -5687,6 +5905,22 @@ func pythonSyntheticClassFieldIDs(arena *nodeArena, childCount int, hasArgList b
 	return fieldIDs
 }
 
+func pythonSyntheticFunctionFieldIDs(arena *nodeArena, childCount int, lang *Language) []FieldID {
+	fieldIDs := make([]FieldID, childCount)
+	if arena != nil {
+		fieldIDs = arena.allocFieldIDSlice(childCount)
+	}
+	if fid, ok := lang.FieldByName("name"); ok && childCount > 1 {
+		fieldIDs[1] = fid
+	}
+	if fid, ok := lang.FieldByName("parameters"); ok && childCount > 2 {
+		fieldIDs[2] = fid
+	}
+	if fid, ok := lang.FieldByName("body"); ok && childCount > 4 {
+		fieldIDs[4] = fid
+	}
+	return fieldIDs
+}
 func pythonSyntheticIfFieldIDs(arena *nodeArena, childCount int, lang *Language) []FieldID {
 	fieldIDs := make([]FieldID, childCount)
 	if arena != nil {
