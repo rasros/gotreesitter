@@ -162,6 +162,11 @@ type Language struct {
 	LexStates           []LexState // main lexer DFA
 	KeywordLexStates    []LexState // keyword lexer DFA (optional)
 	KeywordCaptureToken Symbol
+	// LayoutFallbackLexState is an optional broad DFA start state used only in
+	// layout-entry parser states. It lets the runtime avoid skipping over
+	// zero-width external layout markers before the layout scanner fires.
+	LayoutFallbackLexState    uint16
+	HasLayoutFallbackLexState bool
 
 	// Field mapping
 	FieldMapSlices  [][2]uint16 // [production_id] -> (index, length)
