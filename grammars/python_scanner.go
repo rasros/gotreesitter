@@ -328,11 +328,7 @@ func (PythonExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexer
 	}
 
 afterIndentLoop:
-	// After emitting NEWLINE, a follow-up scanner call starts at column 0 on
-	// the next logical line. Allow DEDENT emission from that line start even
-	// when no additional newline rune is consumed in this call.
-	atLineStart := lexer.GetColumn() == 0
-	if foundEndOfLine || atLineStart {
+	if foundEndOfLine {
 		currentIndent := s.indents[len(s.indents)-1]
 
 		if isValid(pyTokIndent) && indentLength > currentIndent {

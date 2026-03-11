@@ -161,7 +161,7 @@ func (d *dfaTokenSource) Next() Token {
 			limit := maxConsecutiveZeroWidthTokens
 			if d.language != nil {
 				switch {
-				case d.language.Name == "yaml":
+				case d.language.Name == "yaml" || d.language.Name == "python":
 					limit = maxConsecutiveZeroWidthTokensExternal
 				case d.allowRepeatedZeroWidthExternalSymbol(tok.Symbol):
 					limit = maxConsecutiveZeroWidthTokensRepeatableExternal
@@ -225,13 +225,25 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	if int(d.state) < len(d.language.LexModes) {
 		lexState = d.language.LexModes[d.state].LexState
 	}
-	tok := d.lexer.Next(lexState)
+	tok := d.nextTokenForLexState(lexState)
 	tok = d.promoteKeyword(tok)
 	tok, endPos, endRow, endCol := d.normalizeDFAToken(tok, d.lexer.pos, d.lexer.row, d.lexer.col)
 	d.lexer.pos = endPos
 	d.lexer.row = endRow
 	d.lexer.col = endCol
 	return tok
+}
+
+func (d *dfaTokenSource) nextTokenForLexState(lexState uint16) Token {
+	if d == nil || d.lexer == nil {
+		return Token{}
+	}
+	if lexState == noLookaheadLexState {
+		tok := d.eofTokenAtLexerPos()
+		tok.NoLookahead = true
+		return tok
+	}
+	return d.lexer.Next(lexState)
 }
 
 func (d *dfaTokenSource) shouldForceEOFLookahead() bool {
@@ -301,6 +313,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	bestEndRow := startRow
 	bestEndCol := startCol
 	bestVisible := false
+	bestOriginActions := 0
 
 	// Deduplicate lex states to avoid redundant scans.
 	seen := make(map[uint16]struct{}, len(d.glrStates))
@@ -320,7 +333,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 
 		prevState := d.state
 		d.state = st
-		candTok := d.lexer.Next(lexState)
+		candTok := d.nextTokenForLexState(lexState)
 		candTok = d.promoteKeyword(candTok)
 		candTok, candEndPos, candEndRow, candEndCol := d.normalizeDFAToken(candTok, d.lexer.pos, d.lexer.row, d.lexer.col)
 		d.lexer.pos = candEndPos
@@ -333,6 +346,10 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			if d.lookupActionIndex(liveState, candTok.Symbol) != 0 {
 				score++
 			}
+		}
+		originActionCount := 0
+		if idx := d.lookupActionIndex(st, candTok.Symbol); idx != 0 && int(idx) < len(d.language.ParseActions) {
+			originActionCount = len(d.language.ParseActions[idx].Actions)
 		}
 
 		if score <= 0 {
@@ -347,11 +364,12 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 		better := !bestFound ||
 			candTok.StartByte < bestTok.StartByte ||
 			(candTok.StartByte == bestTok.StartByte && splitPreference > 0) ||
-			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos > bestEndPos) ||
-			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte > bestTok.EndByte) ||
-			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && d.preferSpecificTokenOnExactMatch(candTok, candEndPos, bestTok, bestEndPos)) ||
-			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score > bestScore) ||
-			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score == bestScore && candVisible && !bestVisible)
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && originActionCount > bestOriginActions) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && originActionCount == bestOriginActions && candEndPos > bestEndPos) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && originActionCount == bestOriginActions && candEndPos == bestEndPos && candTok.EndByte > bestTok.EndByte) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && originActionCount == bestOriginActions && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && d.preferSpecificTokenOnExactMatch(candTok, candEndPos, bestTok, bestEndPos)) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && originActionCount == bestOriginActions && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score > bestScore) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && originActionCount == bestOriginActions && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score == bestScore && candVisible && !bestVisible)
 		if better {
 			bestFound = true
 			bestScore = score
@@ -360,6 +378,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			bestEndRow = candEndRow
 			bestEndCol = candEndCol
 			bestVisible = candVisible
+			bestOriginActions = originActionCount
 		}
 	}
 
@@ -476,11 +495,11 @@ func (d *dfaTokenSource) activeActionSpecificity(sym Symbol) int {
 		return 0
 	}
 	type actionStats struct {
-		maxDyn      int
-		totalDyn    int
-		maxActions  int
-		totalActs   int
-		supporting  int
+		maxDyn     int
+		totalDyn   int
+		maxActions int
+		totalActs  int
+		supporting int
 	}
 	stats := actionStats{}
 	seen := map[StateID]struct{}{}
