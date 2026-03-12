@@ -109,8 +109,8 @@ func (q *Query) stepAnchorsSatisfied(
 	hasNamed bool,
 	firstNamedPos int,
 	lastNamedPos int,
-	prevHasNamed bool,
-	prevLastNamedPos int,
+	priorHasNamed bool,
+	priorLastNamedPos int,
 	parentLastNamedPos int,
 ) bool {
 	if step.anchorBefore {
@@ -122,10 +122,11 @@ func (q *Query) stepAnchorsSatisfied(
 				return false
 			}
 		} else {
-			if !prevHasNamed {
-				return false
-			}
-			if firstNamedPos != prevLastNamedPos+1 {
+			if !priorHasNamed {
+				if firstNamedPos != 0 {
+					return false
+				}
+			} else if firstNamedPos != priorLastNamedPos+1 {
 				return false
 			}
 		}
@@ -309,9 +310,14 @@ func (q *Query) matchChildStepsRecursive(
 				) {
 					return false
 				}
+				nextPrevHasNamed := prevHasNamed || hasNamed
+				nextPrevLastNamedPos := prevLastNamedPos
+				if hasNamed {
+					nextPrevLastNamedPos = lastNamedPos
+				}
 				return q.matchChildStepsRecursive(
 					parent, children, namedPosByIndex, parentLastNamedPos,
-					steps, childSteps, childPos+1, nextIdx, hasNamed, lastNamedPos,
+					steps, childSteps, childPos+1, nextIdx, nextPrevHasNamed, nextPrevLastNamedPos,
 					lang, source, captures,
 				)
 			}
@@ -560,7 +566,7 @@ func (q *Query) nodeMatchesStep(step *QueryStep, node *Node, lang *Language) boo
 
 	// Wildcard (symbol == 0 and no textMatch and no alternatives).
 	if step.symbol == 0 {
-		return true
+		return !step.isNamed || node.IsNamed()
 	}
 
 	// Symbol matching — use public symbol to handle aliases.
@@ -595,7 +601,7 @@ func (q *Query) nodeMatchesStep(step *QueryStep, node *Node, lang *Language) boo
 func alternativeMatchesNode(alt alternativeSymbol, node *Node, lang *Language) bool {
 	// Wildcard in alternation `( _ )` should match any node.
 	if alt.symbol == 0 && alt.textMatch == "" {
-		return true
+		return !alt.isNamed || node.IsNamed()
 	}
 
 	if alt.textMatch != "" {
@@ -617,7 +623,7 @@ func alternativeMatchesNodeCached(
 ) bool {
 	// Wildcard in alternation `( _ )` should match any node.
 	if alt.symbol == 0 && alt.textMatch == "" {
-		return true
+		return !alt.isNamed || nodeNamed
 	}
 
 	if alt.textMatch != "" {

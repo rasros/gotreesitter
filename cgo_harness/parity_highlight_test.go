@@ -5,6 +5,7 @@ package cgoharness
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -23,6 +24,13 @@ func (h highlightCapture) String() string {
 	return fmt.Sprintf("@%s [%d-%d]", h.Name, h.StartByte, h.EndByte)
 }
 
+func includeHighlightCaptureName(name string) bool {
+	if strings.TrimSpace(name) == "" {
+		return false
+	}
+	return !strings.HasPrefix(name, "_")
+}
+
 // --- Three-tier highlight parity tracking ---
 //
 // Tier 1: curatedHighlightLanguages (in parity_cgo_test.go) — merge-blocking. These
@@ -37,9 +45,7 @@ func (h highlightCapture) String() string {
 
 // knownHighlightDivergence tracks C-only capture counts for curated languages
 // with strict custom thresholds.
-var knownHighlightDivergence = map[string]int{
-	"julia": 1, // keyword.import "end" in module_definition alternation
-}
+var knownHighlightDivergence = map[string]int{}
 
 // knownHighlightGoOnly tracks Go-only capture counts for curated languages with
 // strict custom thresholds.
@@ -57,55 +63,21 @@ type highlightTolerance struct {
 // languages. Each entry records the maximum tolerated (cMissing, goOnly).
 // This list can shrink (as fixes land) but must not grow (regressions block).
 var knownDegradedHighlight = map[string]highlightTolerance{
-	"astro":         {cMissing: 4, goOnly: 6},
-	"authzed":       {cMissing: 1},
-	"awk":           {cMissing: 1, goOnly: 1},
-	"bicep":         {goOnly: 1},
-	"bitbake":       {cMissing: 1},
-	"blade":         {cMissing: 1},
-	"cairo":         {cMissing: 2},
-	"chatito":       {goOnly: 5},
-	"cmake":         {cMissing: 1},
-	"cylc":          {cMissing: 3},
-	"diff":          {cMissing: 11},
-	"disassembly":   {goOnly: 1},
-	"eex":           {cMissing: 1},
-	"enforce":       {cMissing: 3, goOnly: 1},
-	"fish":          {cMissing: 2},
-	"git_config":    {cMissing: 1, goOnly: 1},
-	"git_rebase":    {cMissing: 6},
-	"gitattributes": {cMissing: 1},
-	"gitcommit":     {cMissing: 2},
-	"glsl":          {cMissing: 2},
-	"gomod":         {cMissing: 1},
-	"hare":          {cMissing: 3, goOnly: 1},
-	"haskell":       {cMissing: 2},
-	"haxe":          {cMissing: 4},
-	"http":          {cMissing: 5},
-	"jsonnet":       {cMissing: 1},
-	"kconfig":       {cMissing: 2},
-	"less":          {cMissing: 2},
-	"linkerscript":  {cMissing: 2},
-	"llvm":          {cMissing: 1, goOnly: 1},
-	"luau":          {cMissing: 2},
-	"mermaid":       {cMissing: 6},
-	"nginx":         {cMissing: 2},
-	"nim":           {goOnly: 4},
-	"ninja":         {cMissing: 3},
-	"objc":          {cMissing: 4},
-	"odin":          {cMissing: 2},
-	"org":           {cMissing: 4},
-	"perl":          {goOnly: 4},
-	"purescript":    {goOnly: 1},
-	"requirements":  {goOnly: 1},
-	"robot":         {cMissing: 3, goOnly: 1},
-	"smithy":        {goOnly: 1},
-	"squirrel":      {cMissing: 3},
-	"ssh_config":    {cMissing: 5},
-	"thrift":        {cMissing: 1},
-	"tlaplus":       {cMissing: 1, goOnly: 2},
-	"todotxt":       {cMissing: 2},
-	"uxntal":        {cMissing: 4},
+	"bicep":        {goOnly: 1},
+	"cairo":        {cMissing: 2},
+	"enforce":      {cMissing: 3},
+	"glsl":         {cMissing: 2},
+	"hare":         {cMissing: 3, goOnly: 1},
+	"jsonnet":      {cMissing: 1},
+	"kconfig":      {cMissing: 2},
+	"linkerscript": {cMissing: 2},
+	"luau":         {cMissing: 2},
+	"odin":         {cMissing: 2},
+	"purescript":   {goOnly: 1},
+	"smithy":       {goOnly: 1},
+	"squirrel":     {cMissing: 3},
+	"thrift":       {cMissing: 1},
+	"uxntal":       {cMissing: 4},
 }
 
 // collectGoHighlightCaptures runs a highlight query against a Go parse tree
@@ -122,6 +94,9 @@ func collectGoHighlightCaptures(t *testing.T, lang *gotreesitter.Language, tree 
 	var caps []highlightCapture
 	for _, m := range matches {
 		for _, c := range m.Captures {
+			if !includeHighlightCaptureName(c.Name) {
+				continue
+			}
 			caps = append(caps, highlightCapture{
 				Name:      c.Name,
 				StartByte: c.Node.StartByte(),
@@ -161,6 +136,9 @@ func collectCHighlightCaptures(t *testing.T, cLang *sitter.Language, cTree *sitt
 			name := ""
 			if int(c.Index) < len(captureNames) {
 				name = captureNames[c.Index]
+			}
+			if !includeHighlightCaptureName(name) {
+				continue
 			}
 			caps = append(caps, highlightCapture{
 				Name:      name,

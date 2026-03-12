@@ -345,6 +345,82 @@ func TestHighlightGapFieldCheck(t *testing.T) {
 	}
 }
 
+func TestHighlightObjcMiniQueryDiagnosis(t *testing.T) {
+	langName := "objc"
+	var tc parityCase
+	found := false
+	for _, c := range parityCases {
+		if c.name == langName {
+			tc = c
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Skipf("no parity case for %q", langName)
+	}
+
+	src := normalizedSource(tc.name, tc.source)
+	goTree, goLang, err := parseWithGo(tc, src, nil)
+	if err != nil {
+		t.Fatalf("Go parse error: %v", err)
+	}
+	defer releaseGoTree(goTree)
+
+	cLang, err := ParityCLanguage(langName)
+	if err != nil {
+		t.Skipf("skip C reference: %v", err)
+	}
+	cParser := sitter.NewParser()
+	defer cParser.Close()
+	if err := cParser.SetLanguage(cLang); err != nil {
+		t.Skipf("skip C SetLanguage: %v", err)
+	}
+	cTree := cParser.Parse(src, nil)
+	if cTree == nil {
+		t.Fatal("C parser returned nil tree")
+	}
+	defer cTree.Close()
+
+	t.Logf("Go root: %s", goTree.RootNode().SExpr(goLang))
+	if sym, ok := goLang.SymbolByName("struct_declaration"); ok {
+		t.Logf("Go struct_declaration: sym=%d supertype=%v children=%v", sym, goLang.IsSupertype(sym), goLang.SupertypeChildren(sym))
+	} else {
+		t.Logf("Go struct_declaration: missing")
+	}
+	if sym, ok := goLang.SymbolByName("class_interface"); ok {
+		t.Logf("Go class_interface: sym=%d public=%d", sym, goLang.PublicSymbol(sym))
+	} else {
+		t.Logf("Go class_interface: missing")
+	}
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "class_interface_types",
+			query: `(class_interface "@interface" . (identifier) @type superclass: _? @type)`,
+		},
+		{
+			name:  "struct_ancestor_property",
+			query: `((identifier) @property (#has-ancestor? @property struct_declaration))`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			goCaps := collectGoHighlightCaptures(t, goLang, goTree, tt.query, src)
+			cCaps := collectCHighlightCaptures(t, cLang, cTree, tt.query, src)
+			t.Logf("go=%v", goCaps)
+			t.Logf("c=%v", cCaps)
+			onlyGo, onlyC := diffCaptures(goCaps, cCaps)
+			t.Logf("onlyGo=%v", onlyGo)
+			t.Logf("onlyC=%v", onlyC)
+		})
+	}
+}
+
 // findQueryPatternForCapture searches the query string for patterns that
 // reference the given capture name. Returns a truncated snippet of the
 // first matching pattern.

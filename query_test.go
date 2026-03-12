@@ -86,6 +86,22 @@ func queryTestLanguage() *Language {
 	}
 }
 
+func queryTestLanguageWithSupertypes() *Language {
+	lang := queryTestLanguage()
+	lang.SymbolNames = append(lang.SymbolNames, "declaration")
+	lang.SymbolMetadata = append(lang.SymbolMetadata, SymbolMetadata{
+		Name:      "declaration",
+		Visible:   true,
+		Named:     true,
+		Supertype: true,
+	})
+	lang.SupertypeSymbols = []Symbol{16}
+	lang.SupertypeMapSlices = make([][2]uint16, 17)
+	lang.SupertypeMapSlices[16] = [2]uint16{0, 1}
+	lang.SupertypeMapEntries = []Symbol{5}
+	return lang
+}
+
 // Helper to make leaf nodes quickly.
 func leaf(sym Symbol, named bool, start, end uint32) *Node {
 	return NewLeafNode(sym, named, start, end,
@@ -140,6 +156,9 @@ func TestParseWildcard(t *testing.T) {
 	step := q.patterns[0].steps[0]
 	if step.symbol != 0 {
 		t.Fatalf("symbol: got %d, want 0 for wildcard", step.symbol)
+	}
+	if !step.isNamed {
+		t.Fatalf("isNamed: got false, want true for parenthesized named wildcard")
 	}
 	if step.captureID < 0 {
 		t.Fatal("captureID: expected >= 0")
@@ -1408,6 +1427,21 @@ func TestMatchPredicateHasAncestor(t *testing.T) {
 	}
 }
 
+func TestMatchPredicateHasAncestorViaSupertype(t *testing.T) {
+	lang := queryTestLanguageWithSupertypes()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @name (#has-ancestor? @name declaration)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+}
+
 func TestMatchPredicateNotHasAncestor(t *testing.T) {
 	lang := queryTestLanguage()
 	tree := buildSimpleTree(lang)
@@ -1805,6 +1839,85 @@ func TestMatchWildcard(t *testing.T) {
 	}
 	if !foundProgram {
 		t.Fatal("expected a match for program node using wildcard")
+	}
+}
+
+func TestMatchAnchorAfterAnonymousSibling(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(function_declaration "func" . (identifier) @name)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 || len(matches[0].Captures) != 1 {
+		t.Fatalf("captures: got %d matches / %d captures, want 1/1", len(matches), func() int {
+			if len(matches) == 0 {
+				return 0
+			}
+			return len(matches[0].Captures)
+		}())
+	}
+	if got, want := matches[0].Captures[0].Node.Text(tree.Source()), "main"; got != want {
+		t.Fatalf("anchor-after-anonymous capture = %q, want %q", got, want)
+	}
+}
+
+func TestMatchNamedWildcardSkipsAnonymousNodes(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(function_declaration (_) @child)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 || len(matches[0].Captures) == 0 {
+		t.Fatalf("captures: got %d matches / %d captures, want 1/non-zero", len(matches), func() int {
+			if len(matches) == 0 {
+				return 0
+			}
+			return len(matches[0].Captures)
+		}())
+	}
+	foundMain := false
+	for _, c := range matches[0].Captures {
+		if got := c.Node.Text(tree.Source()); got == "func" {
+			t.Fatalf("named wildcard matched anonymous token %q", got)
+		}
+		if c.Node.Text(tree.Source()) == "main" {
+			foundMain = true
+		}
+	}
+	if !foundMain {
+		t.Fatalf("named wildcard captures missing %q", "main")
+	}
+}
+
+func TestParseBareWildcardChildRemainsUnnamed(t *testing.T) {
+	lang := queryTestLanguage()
+
+	q, err := NewQuery(`(function_declaration _ @child)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	if got := len(q.patterns); got != 1 {
+		t.Fatalf("patterns: got %d, want 1", got)
+	}
+	steps := q.patterns[0].steps
+	if got := len(steps); got != 2 {
+		t.Fatalf("steps: got %d, want 2", got)
+	}
+	child := steps[1]
+	if child.symbol != 0 {
+		t.Fatalf("child symbol: got %d, want 0", child.symbol)
+	}
+	if child.isNamed {
+		t.Fatalf("child isNamed: got true, want false for bare wildcard")
 	}
 }
 

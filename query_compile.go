@@ -122,6 +122,11 @@ func (p *queryParser) parsePattern(depth int, parentSymbolHint Symbol) (*Pattern
 		if err != nil {
 			return nil, err
 		}
+		if nodeType == "_" {
+			// Tree-sitter distinguishes parenthesized `(_)` (named wildcard)
+			// from bare `_` (matches named or anonymous nodes).
+			step.isNamed = true
+		}
 		pat.steps = append(pat.steps, step)
 		rootIdx = 0
 
