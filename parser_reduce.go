@@ -1065,7 +1065,12 @@ func normalizeMixedSourceFieldSpan(fieldIDs []FieldID, fieldSources []uint8, sta
 		hasDirect    bool
 		hasInherited bool
 	}
-	var spans map[FieldID]mixedSourceSpan
+	type mixedSourceEntry struct {
+		fid  FieldID
+		span mixedSourceSpan
+	}
+	var small [8]mixedSourceEntry
+	spans := small[:0]
 	for i := start; i < end; i++ {
 		fid := fieldIDs[i]
 		if fid == 0 {
@@ -1075,14 +1080,24 @@ func normalizeMixedSourceFieldSpan(fieldIDs []FieldID, fieldSources []uint8, sta
 		if source != fieldSourceDirect && source != fieldSourceInherited {
 			continue
 		}
-		if spans == nil {
-			spans = make(map[FieldID]mixedSourceSpan)
+		idx := -1
+		for j := range spans {
+			if spans[j].fid == fid {
+				idx = j
+				break
+			}
 		}
-		span := spans[fid]
-		if !span.hasDirect {
-			span.firstDirect = -1
-			span.lastDirect = -1
+		if idx < 0 {
+			spans = append(spans, mixedSourceEntry{
+				fid: fid,
+				span: mixedSourceSpan{
+					firstDirect: -1,
+					lastDirect:  -1,
+				},
+			})
+			idx = len(spans) - 1
 		}
+		span := &spans[idx].span
 		switch source {
 		case fieldSourceDirect:
 			if !span.hasDirect {
@@ -1093,9 +1108,10 @@ func normalizeMixedSourceFieldSpan(fieldIDs []FieldID, fieldSources []uint8, sta
 		case fieldSourceInherited:
 			span.hasInherited = true
 		}
-		spans[fid] = span
 	}
-	for fid, span := range spans {
+	for _, entry := range spans {
+		fid := entry.fid
+		span := entry.span
 		if !span.hasDirect || !span.hasInherited {
 			continue
 		}
@@ -1659,9 +1675,18 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 		return nil, nil
 	}
 
-	fieldIDs := arena.allocFieldIDSlice(childCount)
-	inherited := make([]bool, childCount)
-	conflictedInherited := make([]bool, childCount)
+	var fieldIDs []FieldID
+	var inherited []bool
+	var conflictedInherited []bool
+	var inheritedSmall [16]bool
+	var conflictedSmall [16]bool
+	if childCount <= len(inheritedSmall) {
+		inherited = inheritedSmall[:childCount]
+		conflictedInherited = conflictedSmall[:childCount]
+	} else {
+		inherited = make([]bool, childCount)
+		conflictedInherited = make([]bool, childCount)
+	}
 	start := int(fm[0])
 	assigned := false
 	for i := 0; i < count; i++ {
@@ -1670,7 +1695,10 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 			break
 		}
 		entry := p.language.FieldMapEntries[entryIdx]
-		if int(entry.ChildIndex) < len(fieldIDs) {
+		if int(entry.ChildIndex) < childCount {
+			if fieldIDs == nil {
+				fieldIDs = arena.allocFieldIDSlice(childCount)
+			}
 			idx := entry.ChildIndex
 			switch {
 			case conflictedInherited[idx]:

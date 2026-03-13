@@ -1,7 +1,6 @@
 package gotreesitter_test
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -9,10 +8,7 @@ import (
 )
 
 func TestGoLargeProcRecoversTopLevelDeclarations(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/large__proc.go")
-	if err != nil {
-		t.Fatalf("read large__proc.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/large__proc.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -77,10 +73,7 @@ func forEachNode(root *gotreesitter.Node, visit func(*gotreesitter.Node)) {
 }
 
 func TestGoLargeProcMainStatementListCarriesTrailingNewlineBeforeBrace(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/large__proc.go")
-	if err != nil {
-		t.Fatalf("read large__proc.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/large__proc.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -129,10 +122,7 @@ func TestGoLargeProcMainStatementListCarriesTrailingNewlineBeforeBrace(t *testin
 }
 
 func TestGoLargeProcGroupedDeclarationsDropSemicolons(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/large__proc.go")
-	if err != nil {
-		t.Fatalf("read large__proc.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/large__proc.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -176,10 +166,7 @@ func TestGoLargeProcGroupedDeclarationsDropSemicolons(t *testing.T) {
 }
 
 func TestGoMediumLetterDropsTopLevelSemicolons(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/medium__letter_test.go")
-	if err != nil {
-		t.Fatalf("read medium__letter_test.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/medium__letter_test.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -201,10 +188,7 @@ func TestGoMediumLetterDropsTopLevelSemicolons(t *testing.T) {
 }
 
 func TestGoMediumLetterCaseStatementListCarriesTrailingNewlineBeforeNextCase(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/medium__letter_test.go")
-	if err != nil {
-		t.Fatalf("read medium__letter_test.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/medium__letter_test.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -237,10 +221,7 @@ func TestGoMediumLetterCaseStatementListCarriesTrailingNewlineBeforeNextCase(t *
 }
 
 func TestGoLargeProcDefaultCaseCarriesTrailingNewlineBeforeNextCase(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/large__proc.go")
-	if err != nil {
-		t.Fatalf("read large__proc.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/large__proc.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -273,10 +254,7 @@ func TestGoLargeProcDefaultCaseCarriesTrailingNewlineBeforeNextCase(t *testing.T
 }
 
 func TestGoLargeProcStatementListCarriesTrailingNewlineBeforeTrailingComments(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/large__proc.go")
-	if err != nil {
-		t.Fatalf("read large__proc.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/large__proc.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -314,10 +292,7 @@ func TestGoLargeProcStatementListCarriesTrailingNewlineBeforeTrailingComments(t 
 }
 
 func TestGoLargeProcExpressionCaseCarriesTrailingBlankLineBeforeComments(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/large__proc.go")
-	if err != nil {
-		t.Fatalf("read large__proc.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/large__proc.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()
@@ -350,10 +325,7 @@ func TestGoLargeProcExpressionCaseCarriesTrailingBlankLineBeforeComments(t *test
 }
 
 func TestGoLargeProcHeaderOnlyCaseStopsAtColon(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/go/large__proc.go")
-	if err != nil {
-		t.Fatalf("read large__proc.go: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/go/large__proc.go")
 
 	tree, lang := parseByLanguageName(t, "go", string(src))
 	root := tree.RootNode()

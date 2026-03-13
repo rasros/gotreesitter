@@ -369,9 +369,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	normalizeCSizeofUnknownTypeIdentifiers(root, source, lang)
 	normalizeCCastUnknownTypeIdentifiers(root, source, lang)
 	normalizeGoSourceFileRoot(root, source, p)
-	normalizeGoGroupedSpecListSemicolons(root, source, lang)
-	normalizeGoStatementListEnds(root, source, lang)
-	normalizeGoCaseClauseEnds(root, source, lang)
+	normalizeGoCompatibility(root, source, lang)
 	normalizeTypeScriptPredefinedGenericCalls(root, source, lang)
 	normalizeTypeScriptEnumBodyFields(root, lang)
 	normalizeJavaScriptTrailingContinueComments(root, source, lang)
@@ -1925,31 +1923,20 @@ func normalizeGoGroupedSpecListSemicolons(root *Node, source []byte, lang *Langu
 	if root == nil || lang == nil || lang.Name != "go" {
 		return
 	}
+	semiSym, ok := symbolByName(lang, ";")
+	if !ok {
+		return
+	}
 	var walk func(*Node)
 	walk = func(n *Node) {
 		if n == nil {
 			return
 		}
-		switch n.Type(lang) {
-		case "import_spec_list",
-			"var_spec_list",
-			"const_spec_list",
-			"field_declaration_list",
-			"source_file",
-			"import_declaration",
-			"var_declaration",
-			"const_declaration",
-			"type_declaration",
-			"statement_list",
-			"statement_list_repeat1":
-		default:
-			goto descend
-		}
 		if len(n.children) > 0 {
 			kept := n.children[:0]
 			changed := false
 			for _, child := range n.children {
-				if child != nil && child.Type(lang) == ";" && goShouldDropSemicolonNode(child, source) {
+				if child != nil && child.symbol == semiSym && goShouldDropSemicolonNode(child, source) {
 					changed = true
 					continue
 				}
@@ -1962,7 +1949,6 @@ func normalizeGoGroupedSpecListSemicolons(root *Node, source []byte, lang *Langu
 				populateParentNode(n, n.children)
 			}
 		}
-	descend:
 		for _, child := range n.children {
 			walk(child)
 		}
@@ -1984,8 +1970,157 @@ func goShouldDropSemicolonNode(n *Node, source []byte) bool {
 	return bytes.IndexByte(text, '\n') >= 0 || bytes.IndexByte(text, '\r') >= 0
 }
 
+func normalizeGoCompatibility(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "go" || len(source) == 0 {
+		return
+	}
+	semiSym, ok := symbolByName(lang, ";")
+	if !ok {
+		return
+	}
+	expressionCaseSym, ok := symbolByName(lang, "expression_case")
+	if !ok {
+		return
+	}
+	defaultCaseSym, ok := symbolByName(lang, "default_case")
+	if !ok {
+		return
+	}
+	typeCaseSym, ok := symbolByName(lang, "type_case")
+	if !ok {
+		return
+	}
+	communicationCaseSym, ok := symbolByName(lang, "communication_case")
+	if !ok {
+		return
+	}
+	statementListSym, ok := symbolByName(lang, "statement_list")
+	if !ok {
+		return
+	}
+	statementListRepeatSym, ok := symbolByName(lang, "statement_list_repeat1")
+	if !ok {
+		return
+	}
+	semiContainerSyms := make([]Symbol, 0, 8)
+	addSemiContainerSym := func(name string) {
+		if sym, found := symbolByName(lang, name); found {
+			semiContainerSyms = append(semiContainerSyms, sym)
+		}
+	}
+	addSemiContainerSym("source_file")
+	addSemiContainerSym("statement_list")
+	addSemiContainerSym("statement_list_repeat1")
+	addSemiContainerSym("import_declaration")
+	addSemiContainerSym("var_declaration")
+	addSemiContainerSym("const_declaration")
+	addSemiContainerSym("type_declaration")
+	addSemiContainerSym("import_spec_list")
+	addSemiContainerSym("var_spec_list")
+	addSemiContainerSym("const_spec_list")
+	addSemiContainerSym("field_declaration_list")
+	symbolIn := func(syms []Symbol, want Symbol) bool {
+		for _, sym := range syms {
+			if sym == want {
+				return true
+			}
+		}
+		return false
+	}
+	isCaseSym := func(sym Symbol) bool {
+		switch sym {
+		case expressionCaseSym, defaultCaseSym, typeCaseSym, communicationCaseSym:
+			return true
+		default:
+			return false
+		}
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if len(n.children) > 0 {
+			if symbolIn(semiContainerSyms, n.symbol) {
+				kept := n.children[:0]
+				changed := false
+				for _, child := range n.children {
+					if child != nil && child.symbol == semiSym && goShouldDropSemicolonNode(child, source) {
+						changed = true
+						continue
+					}
+					kept = append(kept, child)
+				}
+				if changed {
+					n.children = kept
+					n.fieldIDs = nil
+					n.fieldSources = nil
+					populateParentNode(n, n.children)
+				}
+			}
+			for i := 0; i+1 < len(n.children); i++ {
+				curr := n.children[i]
+				next := n.children[i+1]
+				if curr == nil || next == nil {
+					continue
+				}
+				if curr.symbol == statementListSym || curr.symbol == statementListRepeatSym {
+					if curr.endByte < next.startByte && int(next.startByte) <= len(source) {
+						gap := source[curr.endByte:next.startByte]
+						if bytesAreTrivia(gap) {
+							target := goTrailingNewlineBoundary(curr.endByte, next.startByte, source)
+							if target > curr.endByte {
+								extendNodeEndTo(curr, target, source)
+							}
+						}
+					}
+				}
+				if !isCaseSym(curr.symbol) {
+					continue
+				}
+				tail := goTrailingCaseStatementList(curr, statementListSym, statementListRepeatSym)
+				if tail == nil {
+					continue
+				}
+				if tail.endByte < curr.endByte &&
+					int(curr.endByte) <= len(source) &&
+					bytesAreTrivia(source[tail.endByte:curr.endByte]) {
+					target := goTrailingNewlineBoundary(tail.endByte, curr.endByte, source)
+					if target > tail.endByte {
+						extendNodeEndTo(tail, target, source)
+					}
+				}
+				if curr.endByte >= next.startByte || int(next.startByte) > len(source) {
+					continue
+				}
+				target := goTrailingNewlineBoundary(curr.endByte, next.startByte, source)
+				if target > curr.endByte {
+					extendNodeEndTo(curr, target, source)
+					if tail != nil &&
+						tail.endByte < target &&
+						bytesAreTrivia(source[tail.endByte:target]) {
+						extendNodeEndTo(tail, target, source)
+					}
+				}
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
 func normalizeGoStatementListEnds(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "go" || len(source) == 0 {
+		return
+	}
+	statementListSym, ok := symbolByName(lang, "statement_list")
+	if !ok {
+		return
+	}
+	statementListRepeatSym, ok := symbolByName(lang, "statement_list_repeat1")
+	if !ok {
 		return
 	}
 	var walk func(*Node)
@@ -1999,9 +2134,7 @@ func normalizeGoStatementListEnds(root *Node, source []byte, lang *Language) {
 			if curr == nil || next == nil {
 				continue
 			}
-			switch curr.Type(lang) {
-			case "statement_list", "statement_list_repeat1":
-			default:
+			if curr.symbol != statementListSym && curr.symbol != statementListRepeatSym {
 				continue
 			}
 			if curr.endByte >= next.startByte || int(next.startByte) > len(source) {
@@ -2027,6 +2160,30 @@ func normalizeGoCaseClauseEnds(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "go" || len(source) == 0 {
 		return
 	}
+	expressionCaseSym, ok := symbolByName(lang, "expression_case")
+	if !ok {
+		return
+	}
+	defaultCaseSym, ok := symbolByName(lang, "default_case")
+	if !ok {
+		return
+	}
+	typeCaseSym, ok := symbolByName(lang, "type_case")
+	if !ok {
+		return
+	}
+	communicationCaseSym, ok := symbolByName(lang, "communication_case")
+	if !ok {
+		return
+	}
+	statementListSym, ok := symbolByName(lang, "statement_list")
+	if !ok {
+		return
+	}
+	statementListRepeatSym, ok := symbolByName(lang, "statement_list_repeat1")
+	if !ok {
+		return
+	}
 	var walk func(*Node)
 	walk = func(n *Node) {
 		if n == nil {
@@ -2038,12 +2195,12 @@ func normalizeGoCaseClauseEnds(root *Node, source []byte, lang *Language) {
 			if curr == nil || next == nil {
 				continue
 			}
-			switch curr.Type(lang) {
-			case "expression_case", "default_case", "type_case", "communication_case":
+			switch curr.symbol {
+			case expressionCaseSym, defaultCaseSym, typeCaseSym, communicationCaseSym:
 			default:
 				continue
 			}
-			tail := goTrailingCaseStatementList(curr, lang)
+			tail := goTrailingCaseStatementList(curr, statementListSym, statementListRepeatSym)
 			if tail == nil {
 				continue
 			}
@@ -2085,16 +2242,16 @@ func goTrailingNewlineBoundary(start, end uint32, source []byte) uint32 {
 	return start
 }
 
-func goTrailingCaseStatementList(n *Node, lang *Language) *Node {
-	if n == nil || lang == nil || len(n.children) == 0 {
+func goTrailingCaseStatementList(n *Node, statementListSym, statementListRepeatSym Symbol) *Node {
+	if n == nil || len(n.children) == 0 {
 		return nil
 	}
 	last := n.children[len(n.children)-1]
 	if last == nil {
 		return nil
 	}
-	switch last.Type(lang) {
-	case "statement_list", "statement_list_repeat1":
+	switch last.symbol {
+	case statementListSym, statementListRepeatSym:
 		return last
 	default:
 		return nil

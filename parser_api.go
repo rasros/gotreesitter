@@ -118,9 +118,7 @@ func normalizeReturnedTree(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil {
 		return
 	}
-	normalizeGoGroupedSpecListSemicolons(root, source, lang)
-	normalizeGoStatementListEnds(root, source, lang)
-	normalizeGoCaseClauseEnds(root, source, lang)
+	normalizeGoCompatibility(root, source, lang)
 	normalizeScalaTemplateBodyObjectFragments(root, source, lang)
 	normalizeScalaRecoveredObjectTemplateBodies(root, source, lang)
 	normalizeScalaDefinitionFields(root, source, lang)

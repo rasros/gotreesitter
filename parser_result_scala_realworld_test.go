@@ -1,7 +1,6 @@
 package gotreesitter_test
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -9,10 +8,7 @@ import (
 )
 
 func TestScalaPathResolverRecoversTopLevelObjectAndClass(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/scala/medium__PathResolver.scala")
-	if err != nil {
-		t.Fatalf("read medium__PathResolver.scala: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/scala/medium__PathResolver.scala")
 
 	tree, lang := parseByLanguageName(t, "scala", string(src))
 	root := tree.RootNode()
@@ -294,10 +290,7 @@ func TestScalaPathResolverRecoversTopLevelObjectAndClass(t *testing.T) {
 }
 
 func TestScalaPathResolverSimpleImportDotsUsePathField(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/scala/medium__PathResolver.scala")
-	if err != nil {
-		t.Fatalf("read medium__PathResolver.scala: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/scala/medium__PathResolver.scala")
 
 	tree, lang := parseByLanguageName(t, "scala", string(src))
 	root := tree.RootNode()
@@ -330,10 +323,7 @@ func TestScalaPathResolverSimpleImportDotsUsePathField(t *testing.T) {
 }
 
 func TestScalaPathResolverNamespaceSelectorDotDoesNotUsePathField(t *testing.T) {
-	src, err := os.ReadFile("cgo_harness/corpus_real/scala/medium__PathResolver.scala")
-	if err != nil {
-		t.Fatalf("read medium__PathResolver.scala: %v", err)
-	}
+	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/scala/medium__PathResolver.scala")
 
 	tree, lang := parseByLanguageName(t, "scala", string(src))
 	root := tree.RootNode()
