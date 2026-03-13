@@ -25,6 +25,7 @@ type Parser struct {
 	recoveryParser                      *Parser
 	skipRecoveryReparse                 bool
 	fullArenaHint                       uint32
+	incrementalArenaHint                uint32
 	rootSymbol                          Symbol
 	hasRootSymbol                       bool
 	hasRecoverState                     []bool
@@ -236,6 +237,7 @@ func resetSnippetParser(parser *Parser) {
 	parser.recoveryParser = nil
 	parser.skipRecoveryReparse = false
 	parser.fullArenaHint = 0
+	parser.incrementalArenaHint = 0
 	parser.included = nil
 	parser.logger = nil
 	parser.glrTrace = false
@@ -1033,6 +1035,10 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		defer func() {
 			p.recordFullArenaUsage(arena.used)
 		}()
+	} else {
+		defer func() {
+			p.recordIncrementalArenaUsage(arena.used)
+		}()
 	}
 	switch arenaClass {
 	case arenaClassFull:
@@ -1040,7 +1046,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		arena.ensureNodeCapacity(target)
 		scratch.entries.ensureInitialCap(parseFullEntryScratchCapacity(len(source)))
 	case arenaClassIncremental:
-		target := parseIncrementalArenaNodeCapacity(len(source))
+		target := parseIncrementalArenaNodeCapacity(len(source), p.incrementalArenaHintCapacity())
 		arena.ensureNodeCapacity(target)
 		scratch.entries.ensureInitialCap(parseIncrementalEntryScratchCapacity(len(source)))
 	}

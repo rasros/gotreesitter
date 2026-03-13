@@ -171,6 +171,7 @@ func TestResetSnippetParserClearsTransientState(t *testing.T) {
 	parser.recoveryParser = NewParser(buildArithmeticLanguage())
 	parser.skipRecoveryReparse = true
 	parser.fullArenaHint = 123
+	parser.incrementalArenaHint = 77
 	parser.included = []Range{{StartByte: 1, EndByte: 2}}
 	parser.logger = func(kind ParserLogType, message string) {}
 	parser.glrTrace = true
@@ -191,6 +192,9 @@ func TestResetSnippetParserClearsTransientState(t *testing.T) {
 	}
 	if parser.fullArenaHint != 0 {
 		t.Fatal("resetSnippetParser did not clear fullArenaHint")
+	}
+	if parser.incrementalArenaHint != 0 {
+		t.Fatal("resetSnippetParser did not clear incrementalArenaHint")
 	}
 	if len(parser.included) != 0 {
 		t.Fatal("resetSnippetParser did not clear included ranges")
@@ -218,6 +222,19 @@ func TestParseWithSnippetParserParsesSource(t *testing.T) {
 		t.Fatal("parseWithSnippetParser returned nil tree/root")
 	}
 	tree.Release()
+}
+
+func TestParseIncrementalArenaNodeCapacityUsesLargerHint(t *testing.T) {
+	base := parseIncrementalArenaNodeCapacity(32, 0)
+	hinted := parseIncrementalArenaNodeCapacity(32, base*2)
+	if hinted != base*2 {
+		t.Fatalf("parseIncrementalArenaNodeCapacity hint = %d, want %d", hinted, base*2)
+	}
+
+	capped := parseIncrementalArenaNodeCapacity(32, parseNodeLimit(32)*2)
+	if capped != parseNodeLimit(32) {
+		t.Fatalf("parseIncrementalArenaNodeCapacity cap = %d, want %d", capped, parseNodeLimit(32))
+	}
 }
 
 func TestPreferRetryTreePrefersFurtherAcceptedProgress(t *testing.T) {

@@ -82,6 +82,13 @@ func (p *Parser) fullArenaHintCapacity() int {
 	return int(atomic.LoadUint32(&p.fullArenaHint))
 }
 
+func (p *Parser) incrementalArenaHintCapacity() int {
+	if p == nil {
+		return 0
+	}
+	return int(atomic.LoadUint32(&p.incrementalArenaHint))
+}
+
 func (p *Parser) recordFullArenaUsage(used int) {
 	if p == nil || used <= 0 {
 		return
@@ -114,6 +121,38 @@ func (p *Parser) recordFullArenaUsage(used int) {
 	}
 }
 
+func (p *Parser) recordIncrementalArenaUsage(used int) {
+	if p == nil || used <= 0 {
+		return
+	}
+	target := used + used/8 // keep 12.5% headroom above observed peak.
+	base := nodeCapacityForClass(arenaClassIncremental)
+	if target < base {
+		target = base
+	}
+	const maxHintNodes = 1_000_000
+	if target > maxHintNodes {
+		target = maxHintNodes
+	}
+
+	for {
+		old := atomic.LoadUint32(&p.incrementalArenaHint)
+		var next uint32
+		if old == 0 {
+			next = uint32(target)
+		} else {
+			blended := (int(old)*3 + target) / 4
+			if blended < base {
+				blended = base
+			}
+			next = uint32(blended)
+		}
+		if old == next || atomic.CompareAndSwapUint32(&p.incrementalArenaHint, old, next) {
+			return
+		}
+	}
+}
+
 func parseFullEntryScratchCapacity(sourceLen int) int {
 	if sourceLen <= 0 {
 		return defaultStackEntrySlabCap
@@ -131,17 +170,25 @@ func parseFullEntryScratchCapacity(sourceLen int) int {
 	return estimate
 }
 
-func parseIncrementalArenaNodeCapacity(sourceLen int) int {
+func parseIncrementalArenaNodeCapacity(sourceLen, hint int) int {
 	base := nodeCapacityForClass(arenaClassIncremental)
-	if sourceLen <= 0 {
-		return base
+	target := base
+	if sourceLen > 0 {
+		estimate := sourceLen * 4
+		const maxPreallocNodes = 512 * 1024
+		if estimate > maxPreallocNodes {
+			estimate = maxPreallocNodes
+		}
+		target = max(base, estimate)
 	}
-	estimate := sourceLen * 4
-	const maxPreallocNodes = 512 * 1024
-	if estimate > maxPreallocNodes {
-		estimate = maxPreallocNodes
+	if hint <= 0 || hint < target {
+		return target
 	}
-	return max(base, estimate)
+	limit := parseNodeLimit(sourceLen)
+	if hint > limit {
+		return max(base, limit)
+	}
+	return max(base, hint)
 }
 
 func parseIncrementalEntryScratchCapacity(sourceLen int) int {
