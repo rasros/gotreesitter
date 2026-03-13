@@ -1212,12 +1212,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if reuse != nil {
 		// Incremental reparses benefit from tighter GLR retention because
 		// edits are localized and we prioritize latency over broad ambiguity fanout.
-		if maxStacks > 32 {
-			maxStacks = 32
-		}
-		if mergePerKeyCap > 4 {
-			mergePerKeyCap = 4
-		}
+		maxStacks, mergePerKeyCap = tuneIncrementalGLRCaps(maxStacks, mergePerKeyCap)
 	}
 	scratch.merge.perKeyCap = mergePerKeyCap
 	langName := ""

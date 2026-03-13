@@ -252,6 +252,18 @@ func TestIncrementalGSSHintCapacityUsesDefaultFloor(t *testing.T) {
 	}
 }
 
+func TestTuneIncrementalGLRCaps(t *testing.T) {
+	maxStacks, mergePerKey := tuneIncrementalGLRCaps(6, 4)
+	if maxStacks != 2 || mergePerKey != 2 {
+		t.Fatalf("tuneIncrementalGLRCaps(6, 4) = (%d, %d), want (2, 2)", maxStacks, mergePerKey)
+	}
+
+	maxStacks, mergePerKey = tuneIncrementalGLRCaps(1, 1)
+	if maxStacks != 1 || mergePerKey != 1 {
+		t.Fatalf("tuneIncrementalGLRCaps(1, 1) = (%d, %d), want (1, 1)", maxStacks, mergePerKey)
+	}
+}
+
 func TestPreferRetryTreePrefersFurtherAcceptedProgress(t *testing.T) {
 	incumbent := &Tree{
 		root: &Node{
