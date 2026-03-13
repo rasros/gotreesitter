@@ -97,8 +97,7 @@ type editSite struct {
 	end    gotreesitter.Point
 }
 
-func makeGoBenchmarkEditSites(src []byte) []editSite {
-	const marker = "v := "
+func makeBenchmarkEditSites(src []byte, marker string) []editSite {
 	needle := []byte(marker)
 	sites := make([]editSite, 0, 64)
 	from := 0
@@ -119,6 +118,10 @@ func makeGoBenchmarkEditSites(src []byte) []editSite {
 		from = offset + 1
 	}
 	return sites
+}
+
+func makeGoBenchmarkEditSites(src []byte) []editSite {
+	return makeBenchmarkEditSites(src, "v := ")
 }
 
 func toggleDigitAt(src []byte, offset int) {
