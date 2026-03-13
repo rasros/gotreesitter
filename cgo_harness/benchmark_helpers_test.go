@@ -113,3 +113,12 @@ func toggleDigitAt(src []byte, offset int) {
 	}
 	src[offset] = '0'
 }
+
+func prepareEditedBenchmarkSource(cur, scratch []byte, offset int) []byte {
+	if len(scratch) != len(cur) {
+		scratch = make([]byte, len(cur))
+	}
+	copy(scratch, cur)
+	toggleDigitAt(scratch, offset)
+	return scratch
+}

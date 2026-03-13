@@ -145,16 +145,17 @@ func benchmarkParseIncrementalSingleByteEditDFA(b *testing.B, spec dfaBenchmarkS
 	b.ReportAllocs()
 	b.SetBytes(int64(len(src)))
 	b.ResetTimer()
+	scratch := make([]byte, len(src))
 
 	for i := 0; i < b.N; i++ {
-		toggleDigitAt(src, site.offset)
+		next := prepareEditedBenchmarkSource(src, scratch, site.offset)
 		editStart := time.Now()
 		tree.Edit(edit)
 		old := tree
 		if statsEnabled {
 			editTotalNS += uint64(time.Since(editStart).Nanoseconds())
 			var prof gotreesitter.IncrementalParseProfile
-			tree, prof, err = parser.ParseIncrementalProfiled(src, tree)
+			tree, prof, err = parser.ParseIncrementalProfiled(next, tree)
 			reuseTotalNS += uint64(prof.ReuseCursorNanos)
 			parseTotalNS += uint64(prof.ReparseNanos)
 			reusedSubtrees += prof.ReusedSubtrees
@@ -179,7 +180,7 @@ func benchmarkParseIncrementalSingleByteEditDFA(b *testing.B, spec dfaBenchmarkS
 				}
 			}
 		} else {
-			tree, err = parser.ParseIncremental(src, tree)
+			tree, err = parser.ParseIncremental(next, tree)
 		}
 		if err != nil {
 			b.Fatalf("incremental parse error: %v", err)
@@ -190,6 +191,7 @@ func benchmarkParseIncrementalSingleByteEditDFA(b *testing.B, spec dfaBenchmarkS
 		if old != tree {
 			old.Release()
 		}
+		src, scratch = next, src
 	}
 	if statsEnabled {
 		a := gotreesitter.ArenaProfileSnapshot()

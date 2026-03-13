@@ -135,6 +135,15 @@ func toggleDigitAt(src []byte, offset int) {
 	src[offset] = '0'
 }
 
+func prepareEditedBenchmarkSource(cur, scratch []byte, offset int) []byte {
+	if len(scratch) != len(cur) {
+		scratch = make([]byte, len(cur))
+	}
+	copy(scratch, cur)
+	toggleDigitAt(scratch, offset)
+	return scratch
+}
+
 func mustGoTokenSource(tb testing.TB, src []byte, lang *gotreesitter.Language) *grammars.GoTokenSource {
 	tb.Helper()
 	ts, err := grammars.NewGoTokenSource(src, lang)
@@ -276,20 +285,15 @@ func BenchmarkGoParseIncrementalSingleByteEdit(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(src)))
 	b.ResetTimer()
+	scratch := make([]byte, len(src))
 
 	for i := 0; i < b.N; i++ {
-		// Toggle one ASCII digit in place so byte/point ranges stay stable.
-		if src[editAt] == '0' {
-			src[editAt] = '1'
-		} else {
-			src[editAt] = '0'
-		}
-
+		next := prepareEditedBenchmarkSource(src, scratch, editAt)
 		tree.Edit(edit)
-		ts.Reset(src)
+		ts.Reset(next)
 		old := tree
 		var err error
-		tree, err = parser.ParseIncrementalWithTokenSource(src, tree, ts)
+		tree, err = parser.ParseIncrementalWithTokenSource(next, tree, ts)
 		if err != nil {
 			b.Fatalf("incremental parse error: %v", err)
 		}
@@ -299,6 +303,7 @@ func BenchmarkGoParseIncrementalSingleByteEdit(b *testing.B) {
 		if old != tree {
 			old.Release()
 		}
+		src, scratch = next, src
 	}
 	tree.Release()
 }
@@ -361,14 +366,10 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(src)))
 	b.ResetTimer()
+	scratch := make([]byte, len(src))
 
 	for i := 0; i < b.N; i++ {
-		if src[editAt] == '0' {
-			src[editAt] = '1'
-		} else {
-			src[editAt] = '0'
-		}
-
+		next := prepareEditedBenchmarkSource(src, scratch, editAt)
 		editStart := time.Now()
 		tree.Edit(edit)
 		if statsEnabled {
@@ -377,7 +378,7 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 		old := tree
 		if statsEnabled {
 			var prof gotreesitter.IncrementalParseProfile
-			tree, prof, err = parser.ParseIncrementalProfiled(src, tree)
+			tree, prof, err = parser.ParseIncrementalProfiled(next, tree)
 			reuseTotalNS += uint64(prof.ReuseCursorNanos)
 			parseTotalNS += uint64(prof.ReparseNanos)
 			reusedSubtrees += prof.ReusedSubtrees
@@ -396,7 +397,7 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 				maxStacksSeen = prof.MaxStacksSeen
 			}
 		} else {
-			tree, err = parser.ParseIncremental(src, tree)
+			tree, err = parser.ParseIncremental(next, tree)
 		}
 		if err != nil {
 			b.Fatalf("incremental parse error: %v", err)
@@ -407,6 +408,7 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 		if old != tree {
 			old.Release()
 		}
+		src, scratch = next, src
 	}
 	if statsEnabled {
 		a := gotreesitter.ArenaProfileSnapshot()
@@ -541,11 +543,12 @@ func BenchmarkGoParseIncrementalRandomSingleByteEdit(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(src)))
 	b.ResetTimer()
+	scratch := make([]byte, len(src))
 
 	for i := 0; i < b.N; i++ {
 		seed = seed*1664525 + 1013904223
 		site := sites[int(seed%uint32(len(sites)))]
-		toggleDigitAt(src, site.offset)
+		next := prepareEditedBenchmarkSource(src, scratch, site.offset)
 
 		edit := gotreesitter.InputEdit{
 			StartByte:   uint32(site.offset),
@@ -557,9 +560,9 @@ func BenchmarkGoParseIncrementalRandomSingleByteEdit(b *testing.B) {
 		}
 
 		tree.Edit(edit)
-		ts.Reset(src)
+		ts.Reset(next)
 		old := tree
-		tree, err = parser.ParseIncrementalWithTokenSource(src, tree, ts)
+		tree, err = parser.ParseIncrementalWithTokenSource(next, tree, ts)
 		if err != nil {
 			b.Fatalf("incremental parse error: %v", err)
 		}
@@ -569,6 +572,7 @@ func BenchmarkGoParseIncrementalRandomSingleByteEdit(b *testing.B) {
 		if old != tree {
 			old.Release()
 		}
+		src, scratch = next, src
 	}
 	tree.Release()
 }
