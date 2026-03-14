@@ -341,82 +341,126 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	if p != nil {
 		lang = p.language
 	}
-	normalizeCobolLeadingAreaStart(root, source, lang)
-	normalizeCobolTopLevelDefinitionEnd(root, source, lang)
-	normalizeCooklangTrailingStepTail(root, source, lang)
-	normalizeDartConstructorSignatureKinds(root, source, lang)
-	normalizeDartSingleTypeArgumentFreeCalls(root, lang)
-	normalizeDartSwitchExpressionBodyFields(root, lang)
-	normalizeDSourceFileLeadingTrivia(root, source, lang)
-	normalizeDModuleDefinitionBounds(root, lang)
-	normalizeDCallExpressionTemplateTypes(root, lang)
-	normalizeDCallExpressionPropertyTypes(root, lang)
-	normalizeDCallExpressionSimpleTypeCallees(root, lang)
-	normalizeDVariableTypeQualifiers(root, lang)
-	normalizeDVariableStorageClassWrappers(root, lang)
-	normalizeFortranStatementLineBreaks(root, source, lang)
-	normalizeHaskellImportsSpan(root, source, lang)
-	normalizeHaskellZeroWidthTokens(root, lang)
-	normalizeHaskellRootImportField(root, lang)
-	normalizeHaskellDeclarationsSpan(root, source, lang)
-	normalizeHaskellLocalBindsStarts(root, source, lang)
-	normalizeHaskellQuasiquoteStarts(root, source, lang)
-	normalizeBashProgramVariableAssignments(root, lang)
-	normalizeHCLConfigFileRoot(root, lang)
-	normalizeHTMLRecoveredNestedCustomTags(root, lang)
-	normalizeIniSectionStarts(root, lang)
-	normalizeCTranslationUnitRoot(root, lang)
-	normalizeCSizeofUnknownTypeIdentifiers(root, source, lang)
-	normalizeCCastUnknownTypeIdentifiers(root, source, lang)
-	normalizeGoSourceFileRoot(root, source, p)
-	normalizeGoCompatibility(root, source, lang)
-	normalizeTypeScriptPredefinedGenericCalls(root, source, lang)
-	normalizeTypeScriptEnumBodyFields(root, lang)
-	normalizeJavaScriptTrailingContinueComments(root, source, lang)
-	normalizeJavaScriptTopLevelExpressionStatementBounds(root, lang)
-	normalizeJavaScriptTopLevelObjectLiterals(root, lang)
-	normalizeRubyThenStarts(root, lang)
-	normalizeRubyTopLevelModuleBounds(root, source, lang)
-	normalizeLuaChunkLocalDeclarationFields(root, source, lang)
-	normalizeErlangSourceFileForms(root, lang)
-	normalizeMakeConditionalConsequenceFields(root, lang)
-	normalizeNimTopLevelCallEnd(root, source, lang)
-	normalizeNginxAttributeLineBreaks(root, source, lang)
-	normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
-	normalizeCSharpTypeConstraintKeywords(root, lang)
-	normalizeCSharpSwitchTupleCasePatterns(root, lang)
-	normalizeElixirNestedCallTargetFields(root, lang)
-	normalizePHPSingletonTypeWrappers(root, lang)
-	normalizePHPStaticFunctionFragments(root, source, lang)
-	normalizePythonStringContinuationEscapes(root, source, lang)
-	normalizePerlJoinAssignmentLists(root, source, lang)
-	normalizePerlPushExpressionLists(root, source, lang)
-	normalizePerlReturnExpressionLists(root, lang)
-	normalizePowerShellProgramShape(root, source, lang)
-	normalizeCommentTrailingExtraTrivia(root, source, lang)
-	normalizePascalTopLevelProgramEnd(root, source, lang)
-	normalizePascalTrailingExtraTrivia(root, source, lang)
-	normalizeRSTTopLevelSectionEnd(root, source, lang)
-	normalizeSQLRecoveredSelectRoot(root, lang)
-	normalizeScalaObjectTemplateBodyFragments(root, source, lang)
-	normalizeScalaTemplateBodyObjectFragments(root, source, lang)
-	normalizeScalaTemplateBodyRecoveredMembers(root, source, lang)
-	normalizeScalaRecoveredObjectTemplateBodies(root, source, lang)
-	normalizeScalaSplitFunctionDefinitions(root, source, lang)
-	normalizeScalaTopLevelClassFragments(root, source, lang)
-	normalizeScalaCompilationUnitRoot(root, lang)
-	normalizeScalaDefinitionFields(root, source, lang)
-	normalizeScalaTemplateBodyFunctionAnnotations(root, source, lang)
-	normalizeScalaImportPathFields(root, lang)
-	normalizeScalaTemplateBodyFunctionEnds(root, source, lang)
-	normalizeScalaTrailingCommentOwnership(root, source, lang)
-	normalizeScalaFunctionModifierFields(root, lang)
-	normalizeScalaInterpolatedStringTail(root, source, lang)
-	normalizeSvelteTrailingExtraTrivia(root, source, lang)
-	normalizeHTMLRecoveredNestedCustomTagRanges(root, source, lang)
-	normalizeZigEmptyInitListFields(root, lang)
-	normalizeScalaCaseClauseEnds(root, source, lang)
-	normalizeRootEOFNewlineSpan(root, source, lang)
+	if root == nil || lang == nil {
+		return
+	}
+
+	switch lang.Name {
+	case "bash":
+		normalizeBashProgramVariableAssignments(root, lang)
+	case "c":
+		normalizeCTranslationUnitRoot(root, lang)
+		normalizeCSizeofUnknownTypeIdentifiers(root, source, lang)
+		normalizeCCastUnknownTypeIdentifiers(root, source, lang)
+	case "c_sharp":
+		normalizeCSharpTypeConstraintKeywords(root, lang)
+		normalizeCSharpSwitchTupleCasePatterns(root, lang)
+	case "caddy":
+		normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
+	case "cobol":
+		normalizeCobolLeadingAreaStart(root, source, lang)
+		normalizeCobolTopLevelDefinitionEnd(root, source, lang)
+	case "comment":
+		normalizeCommentTrailingExtraTrivia(root, source, lang)
+	case "cooklang":
+		normalizeCooklangTrailingStepTail(root, source, lang)
+	case "d":
+		normalizeDSourceFileLeadingTrivia(root, source, lang)
+		normalizeDModuleDefinitionBounds(root, lang)
+		normalizeDCallExpressionTemplateTypes(root, lang)
+		normalizeDCallExpressionPropertyTypes(root, lang)
+		normalizeDCallExpressionSimpleTypeCallees(root, lang)
+		normalizeDVariableTypeQualifiers(root, lang)
+		normalizeDVariableStorageClassWrappers(root, lang)
+	case "dart":
+		normalizeDartConstructorSignatureKinds(root, source, lang)
+		normalizeDartSingleTypeArgumentFreeCalls(root, lang)
+		normalizeDartSwitchExpressionBodyFields(root, lang)
+	case "elixir":
+		normalizeElixirNestedCallTargetFields(root, lang)
+	case "erlang":
+		normalizeErlangSourceFileForms(root, lang)
+	case "fortran":
+		normalizeFortranStatementLineBreaks(root, source, lang)
+		normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
+	case "go":
+		normalizeGoSourceFileRoot(root, source, p)
+		normalizeGoCompatibility(root, source, lang)
+		normalizeRootEOFNewlineSpan(root, source, lang)
+	case "haskell":
+		normalizeHaskellImportsSpan(root, source, lang)
+		normalizeHaskellZeroWidthTokens(root, lang)
+		normalizeHaskellRootImportField(root, lang)
+		normalizeHaskellDeclarationsSpan(root, source, lang)
+		normalizeHaskellLocalBindsStarts(root, source, lang)
+		normalizeHaskellQuasiquoteStarts(root, source, lang)
+	case "hcl":
+		normalizeHCLConfigFileRoot(root, lang)
+	case "html":
+		normalizeHTMLRecoveredNestedCustomTags(root, lang)
+		normalizeHTMLRecoveredNestedCustomTagRanges(root, source, lang)
+	case "ini":
+		normalizeIniSectionStarts(root, lang)
+	case "javascript":
+		normalizeJavaScriptTrailingContinueComments(root, source, lang)
+		normalizeJavaScriptTopLevelExpressionStatementBounds(root, lang)
+		normalizeJavaScriptTopLevelObjectLiterals(root, lang)
+	case "lua":
+		normalizeLuaChunkLocalDeclarationFields(root, source, lang)
+	case "make":
+		normalizeMakeConditionalConsequenceFields(root, lang)
+	case "nginx":
+		normalizeNginxAttributeLineBreaks(root, source, lang)
+	case "nim":
+		normalizeNimTopLevelCallEnd(root, source, lang)
+	case "pascal":
+		normalizePascalTopLevelProgramEnd(root, source, lang)
+		normalizePascalTrailingExtraTrivia(root, source, lang)
+	case "perl":
+		normalizePerlJoinAssignmentLists(root, source, lang)
+		normalizePerlPushExpressionLists(root, source, lang)
+		normalizePerlReturnExpressionLists(root, lang)
+	case "php":
+		normalizePHPSingletonTypeWrappers(root, lang)
+		normalizePHPStaticFunctionFragments(root, source, lang)
+	case "powershell":
+		normalizePowerShellProgramShape(root, source, lang)
+	case "pug":
+		normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
+	case "python":
+		normalizePythonStringContinuationEscapes(root, source, lang)
+	case "rst":
+		normalizeRSTTopLevelSectionEnd(root, source, lang)
+	case "ruby":
+		normalizeRubyThenStarts(root, lang)
+		normalizeRubyTopLevelModuleBounds(root, source, lang)
+	case "scala":
+		normalizeScalaObjectTemplateBodyFragments(root, source, lang)
+		normalizeScalaTemplateBodyObjectFragments(root, source, lang)
+		normalizeScalaTemplateBodyRecoveredMembers(root, source, lang)
+		normalizeScalaRecoveredObjectTemplateBodies(root, source, lang)
+		normalizeScalaSplitFunctionDefinitions(root, source, lang)
+		normalizeScalaTopLevelClassFragments(root, source, lang)
+		normalizeScalaCompilationUnitRoot(root, lang)
+		normalizeScalaDefinitionFields(root, source, lang)
+		normalizeScalaTemplateBodyFunctionAnnotations(root, source, lang)
+		normalizeScalaImportPathFields(root, lang)
+		normalizeScalaTemplateBodyFunctionEnds(root, source, lang)
+		normalizeScalaTrailingCommentOwnership(root, source, lang)
+		normalizeScalaFunctionModifierFields(root, lang)
+		normalizeScalaInterpolatedStringTail(root, source, lang)
+		normalizeScalaCaseClauseEnds(root, source, lang)
+		normalizeRootEOFNewlineSpan(root, source, lang)
+	case "sql":
+		normalizeSQLRecoveredSelectRoot(root, lang)
+	case "svelte":
+		normalizeSvelteTrailingExtraTrivia(root, source, lang)
+	case "tsx", "typescript":
+		normalizeTypeScriptPredefinedGenericCalls(root, source, lang)
+		normalizeTypeScriptEnumBodyFields(root, lang)
+	case "zig":
+		normalizeZigEmptyInitListFields(root, lang)
+	}
 }
 
 func bytesAreTrivia(b []byte) bool {
