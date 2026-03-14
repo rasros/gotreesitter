@@ -1971,6 +1971,22 @@ func goShouldDropSemicolonNode(n *Node, source []byte) bool {
 }
 
 func normalizeGoCompatibility(root *Node, source []byte, lang *Language) {
+	normalizeGoCompatibilityInRanges(root, source, lang, nil)
+}
+
+func nodeOverlapsAnyRange(n *Node, ranges []Range) bool {
+	if n == nil || len(ranges) == 0 {
+		return true
+	}
+	for _, r := range ranges {
+		if !(n.endByte < r.StartByte || r.EndByte < n.startByte) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeGoCompatibilityInRanges(root *Node, source []byte, lang *Language, incrementalRanges []Range) {
 	if root == nil || lang == nil || lang.Name != "go" || len(source) == 0 {
 		return
 	}
@@ -2038,6 +2054,9 @@ func normalizeGoCompatibility(root *Node, source []byte, lang *Language) {
 	var walk func(*Node)
 	walk = func(n *Node) {
 		if n == nil {
+			return
+		}
+		if !nodeOverlapsAnyRange(n, incrementalRanges) {
 			return
 		}
 		if len(n.children) > 0 {
