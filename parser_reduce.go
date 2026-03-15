@@ -1391,6 +1391,15 @@ func (p *Parser) suppressReducedChildFields(children []*Node, fieldIDs []FieldID
 		if fieldSources != nil && i < len(fieldSources) {
 			fieldSources[i] = fieldSourceNone
 		}
+		visible := true
+		if idx := int(n.symbol); idx < len(symbolMeta) {
+			visible = symbolMeta[n.symbol].Visible
+		}
+		if !visible {
+			allVisible = false
+			break
+		}
+		visibleCount++
 	}
 }
 
