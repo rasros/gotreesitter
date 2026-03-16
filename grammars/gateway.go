@@ -2,6 +2,7 @@ package grammars
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -80,12 +81,13 @@ func (pf *ParsedFile) Close() {
 
 // WalkStats summarizes the results of a WalkAndParse run.
 type WalkStats struct {
-	FilesFound    int
-	FilesParsed   int
-	FilesFailed   int
-	FilesFiltered int
-	LargeFiles    int
-	BytesParsed   int64
+	FilesFound     int
+	FilesParsed    int
+	FilesFailed    int
+	FilesFiltered  int
+	LargeFiles     int
+	BinarySkipped  int
+	BytesParsed    int64
 }
 
 // DefaultPolicy returns a ParsePolicy with sensible defaults:
@@ -224,6 +226,14 @@ func WalkAndParse(ctx context.Context, root string, policy ParsePolicy) (<-chan 
 				}
 			}
 
+			// Binary file detection: check first 8 KB for NUL bytes.
+			if bin, _ := checkBinaryFile(p); bin {
+				mu.Lock()
+				stats.BinarySkipped++
+				mu.Unlock()
+				return nil
+			}
+
 			progress(ProgressEvent{
 				Phase:   "walking",
 				Path:    p,
@@ -287,6 +297,12 @@ func WalkAndParse(ctx context.Context, root string, policy ParsePolicy) (<-chan 
 				go func(filePath string, entry *LangEntry, size int64, fileNum int) {
 					defer wg.Done()
 
+					// Check for cancellation before doing work.
+					if ctx.Err() != nil {
+						<-sem
+						return
+					}
+
 					progress(ProgressEvent{
 						Phase:   "parsing",
 						Path:    filePath,
@@ -316,7 +332,10 @@ func WalkAndParse(ctx context.Context, root string, policy ParsePolicy) (<-chan 
 		})
 
 		// Walk complete — wait for all in-flight goroutines.
-		progress(ProgressEvent{Phase: "walk_complete"})
+		progress(ProgressEvent{
+			Phase: "walk_complete",
+			Total: int(atomic.LoadInt32(&filesFound)),
+		})
 		wg.Wait()
 
 		mu.Lock()
@@ -334,6 +353,43 @@ func WalkAndParse(ctx context.Context, root string, policy ParsePolicy) (<-chan 
 	}
 
 	return ch, statsFn
+}
+
+// binaryCheckSize is the number of bytes inspected for NUL-byte detection.
+const binaryCheckSize = 8192
+
+// isBinary returns true if the first 8 KB of data contain a NUL byte,
+// indicating the file is likely binary.
+func isBinary(data []byte) bool {
+	end := len(data)
+	if end > binaryCheckSize {
+		end = binaryCheckSize
+	}
+	for i := 0; i < end; i++ {
+		if data[i] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// checkBinaryFile reads the first 8 KB of the file at path and returns true
+// if it appears to be a binary file (contains a NUL byte). Returns false and
+// a non-nil error if the file cannot be opened/read.
+func checkBinaryFile(path string) (binary bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	buf := make([]byte, binaryCheckSize)
+	n, err := io.ReadAtLeast(f, buf, 1)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		// Empty file or genuine read error — not binary.
+		return false, nil
+	}
+	return isBinary(buf[:n]), nil
 }
 
 // parseOne reads and parses a single file, returning a ParsedFile.

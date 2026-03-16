@@ -2,9 +2,12 @@ package grammars
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -354,10 +357,10 @@ func TestWalkAndParseEmptyDir(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWalkAndParseCancellation(t *testing.T) {
+	const totalFiles = 50
 	dir := t.TempDir()
-	// Create enough files so that cancellation has a chance to fire.
-	for i := 0; i < 20; i++ {
-		writeFile(t, filepath.Join(dir, filepath.Base(t.TempDir())+".go"),
+	for i := 0; i < totalFiles; i++ {
+		writeFile(t, filepath.Join(dir, fmt.Sprintf("file%03d.go", i)),
 			"package main\n")
 	}
 
@@ -366,16 +369,33 @@ func TestWalkAndParseCancellation(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.MaxConcurrent = 1
 	policy.ChannelBuffer = 2
-	ch, _ := WalkAndParse(ctx, dir, policy)
+	ch, statsFn := WalkAndParse(ctx, dir, policy)
 
-	// Read one result then cancel.
-	<-ch
+	// Read 3 results then cancel.
+	received := 0
+	for range 3 {
+		pf, ok := <-ch
+		if !ok {
+			break
+		}
+		pf.Close()
+		received++
+	}
 	cancel()
 
 	// Drain remaining — channel must close eventually.
 	for pf := range ch {
 		pf.Close()
+		received++
 	}
+
+	stats := statsFn()
+	processed := stats.FilesParsed + stats.FilesFailed
+	if processed >= totalFiles {
+		t.Errorf("expected fewer than %d processed after cancel, got %d", totalFiles, processed)
+	}
+	t.Logf("cancel after 3: received=%d, parsed=%d, failed=%d, found=%d",
+		received, stats.FilesParsed, stats.FilesFailed, stats.FilesFound)
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +472,220 @@ func TestWalkAndParseProgress(t *testing.T) {
 		if phases[required] == 0 {
 			t.Errorf("missing progress phase: %s", required)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Large file throttled — verify stats and progress
+// ---------------------------------------------------------------------------
+
+func TestWalkAndParse_LargeFileThrottled(t *testing.T) {
+	dir := t.TempDir()
+
+	// Below threshold.
+	writeFile(t, filepath.Join(dir, "tiny.go"), "package a\n")
+
+	// Above threshold — two large files to verify count.
+	padding := strings.Repeat("x", 200)
+	writeFile(t, filepath.Join(dir, "huge1.go"), "package main\n\nfunc f1() { /* "+padding+" */ }\n")
+	writeFile(t, filepath.Join(dir, "huge2.go"), "package main\n\nfunc f2() { /* "+padding+" */ }\n")
+
+	policy := DefaultPolicy()
+	policy.LargeFileThreshold = 50 // both huge files exceed this
+	policy.MaxConcurrent = 2
+	policy.ChannelBuffer = 3
+
+	var mu sync.Mutex
+	var largeFilePaths []string
+	policy.OnProgress = func(ev ProgressEvent) {
+		if ev.Phase == "large_file" {
+			mu.Lock()
+			largeFilePaths = append(largeFilePaths, ev.Path)
+			mu.Unlock()
+		}
+	}
+
+	ch, statsFn := WalkAndParse(context.Background(), dir, policy)
+	for pf := range ch {
+		if pf.Err != nil {
+			t.Errorf("error for %s: %v", pf.Path, pf.Err)
+		}
+		pf.Close()
+	}
+
+	stats := statsFn()
+	if stats.LargeFiles != 2 {
+		t.Errorf("LargeFiles = %d, want 2", stats.LargeFiles)
+	}
+	if len(largeFilePaths) != 2 {
+		t.Errorf("large_file progress events = %d, want 2", len(largeFilePaths))
+	}
+	if stats.FilesParsed != 3 {
+		t.Errorf("FilesParsed = %d, want 3", stats.FilesParsed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Progress phases — verify ordering
+// ---------------------------------------------------------------------------
+
+func TestWalkAndParse_ProgressPhases(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.go"), "package main\n")
+	writeFile(t, filepath.Join(dir, "b.go"), "package main\n")
+
+	policy := DefaultPolicy()
+	policy.MaxConcurrent = 1
+	policy.ChannelBuffer = 2
+
+	var mu sync.Mutex
+	var phases []string
+	policy.OnProgress = func(ev ProgressEvent) {
+		mu.Lock()
+		phases = append(phases, ev.Phase)
+		mu.Unlock()
+	}
+
+	ch, statsFn := WalkAndParse(context.Background(), dir, policy)
+	for pf := range ch {
+		pf.Close()
+	}
+	_ = statsFn()
+
+	// Check that all required phases appear.
+	phaseSet := map[string]bool{}
+	for _, p := range phases {
+		phaseSet[p] = true
+	}
+	for _, required := range []string{"walking", "parsing", "walk_complete", "done"} {
+		if !phaseSet[required] {
+			t.Errorf("missing progress phase: %s; got %v", required, phases)
+		}
+	}
+
+	// walk_complete and done must come after all walking/parsing events.
+	lastWalking := -1
+	lastParsing := -1
+	walkCompleteIdx := -1
+	doneIdx := -1
+	for i, p := range phases {
+		switch p {
+		case "walking":
+			lastWalking = i
+		case "parsing":
+			lastParsing = i
+		case "walk_complete":
+			walkCompleteIdx = i
+		case "done":
+			doneIdx = i
+		}
+	}
+
+	if walkCompleteIdx <= lastWalking {
+		t.Errorf("walk_complete (idx=%d) should come after last walking (idx=%d)", walkCompleteIdx, lastWalking)
+	}
+	if doneIdx <= walkCompleteIdx {
+		t.Errorf("done (idx=%d) should come after walk_complete (idx=%d)", doneIdx, walkCompleteIdx)
+	}
+	_ = lastParsing // parsing may interleave with walking due to concurrency
+}
+
+// ---------------------------------------------------------------------------
+// Binary file detection
+// ---------------------------------------------------------------------------
+
+func TestWalkAndParse_BinaryFileSkipped(t *testing.T) {
+	dir := t.TempDir()
+
+	// Normal Go file.
+	writeFile(t, filepath.Join(dir, "good.go"), "package main\n")
+
+	// Go file with NUL bytes — should be detected as binary and skipped.
+	binContent := []byte("package main\n\x00\x00\x00func binary() {}\n")
+	if err := os.WriteFile(filepath.Join(dir, "binary.go"), binContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := DefaultPolicy()
+	policy.MaxConcurrent = 1
+	policy.ChannelBuffer = 2
+
+	ch, statsFn := WalkAndParse(context.Background(), dir, policy)
+
+	var paths []string
+	for pf := range ch {
+		paths = append(paths, filepath.Base(pf.Path))
+		pf.Close()
+	}
+
+	stats := statsFn()
+
+	if len(paths) != 1 {
+		t.Fatalf("got %d files, want 1; paths: %v", len(paths), paths)
+	}
+	if paths[0] != "good.go" {
+		t.Errorf("expected good.go, got %s", paths[0])
+	}
+	if stats.BinarySkipped != 1 {
+		t.Errorf("BinarySkipped = %d, want 1", stats.BinarySkipped)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Read error handling
+// ---------------------------------------------------------------------------
+
+func TestWalkAndParse_ReadError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("test requires non-root to enforce file permissions")
+	}
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good.go"), "package main\n")
+
+	// Create an unreadable file.
+	unreadable := filepath.Join(dir, "secret.go")
+	writeFile(t, unreadable, "package main\n")
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(unreadable, 0o644) })
+
+	policy := DefaultPolicy()
+	policy.MaxConcurrent = 1
+	policy.ChannelBuffer = 2
+
+	ch, statsFn := WalkAndParse(context.Background(), dir, policy)
+
+	var readErrors int
+	var parseSuccesses int
+	for pf := range ch {
+		if pf.Err != nil {
+			if pf.IsRead {
+				t.Errorf("expected IsRead=false for I/O error on %s", pf.Path)
+			}
+			readErrors++
+		} else {
+			parseSuccesses++
+		}
+		pf.Close()
+	}
+
+	stats := statsFn()
+
+	// The unreadable file should fail the binary check open too, so it may
+	// either be skipped silently (checkBinaryFile fails to open, returns false)
+	// and then fail in parseOne, or it may be silently skipped. Let's verify:
+	// checkBinaryFile on an unreadable file returns (false, err), so it won't
+	// be marked binary — it proceeds to parseOne where ReadFile fails.
+	if readErrors != 1 {
+		t.Errorf("read errors = %d, want 1 (FilesFailed=%d)", readErrors, stats.FilesFailed)
+	}
+	if parseSuccesses != 1 {
+		t.Errorf("parse successes = %d, want 1", parseSuccesses)
+	}
+	if stats.FilesFailed != 1 {
+		t.Errorf("FilesFailed = %d, want 1", stats.FilesFailed)
 	}
 }
 
