@@ -16,6 +16,9 @@ import (
 )
 
 // ParsePolicy controls how WalkAndParse discovers and parses files.
+// Configure concurrency limits, file size thresholds, directory/extension
+// filters, and optional hooks for progress reporting and file filtering.
+// Use [DefaultPolicy] to get a policy with sensible defaults.
 type ParsePolicy struct {
 	// LargeFileThreshold is the byte size above which a file is parsed with
 	// exclusive access to all worker slots (serialized). Files at or above
@@ -44,30 +47,54 @@ type ParsePolicy struct {
 	OnProgress func(ProgressEvent)
 }
 
-// ProgressEvent reports progress during WalkAndParse.
+// ProgressEvent reports progress during [WalkAndParse]. The Phase field
+// indicates the stage of processing:
+//
+//   - "walking"       — a file was discovered and queued for parsing
+//   - "parsing"       — a file is being parsed (normal or large)
+//   - "large_file"    — a large file is acquiring exclusive access
+//   - "walk_complete" — directory walk finished; Total is set
+//   - "done"          — all parsing complete, channel about to close
 type ProgressEvent struct {
-	Phase   string // "walking", "parsing", "large_file", "walk_complete", "done"
-	Path    string
-	Size    int64
-	FileNum int
-	Total   int
-	Message string
+	Phase   string // one of: "walking", "parsing", "large_file", "walk_complete", "done"
+	Path    string // file path (empty for walk_complete and done phases)
+	Size    int64  // file size in bytes
+	FileNum int    // 1-based ordinal of this file among discovered files
+	Total   int    // total files found (set only in walk_complete phase)
+	Message string // optional human-readable detail
 }
 
-// ParsedFile is a single result from WalkAndParse. The consumer MUST call
-// Close() when done to release the tree's arena memory.
+// ParsedFile is a single result from [WalkAndParse]. Each ParsedFile owns its
+// BoundTree and Source slice. The consumer MUST call [ParsedFile.Close] when
+// finished inspecting the tree to release arena memory. Failing to close
+// results will leak memory proportional to the parsed file sizes.
+//
+// When Err is non-nil, check IsRead to distinguish I/O errors (IsRead=false,
+// file could not be read) from parse errors (IsRead=true, file was read but
+// the grammar could not parse it). On I/O errors, Source and Tree are nil.
 type ParsedFile struct {
-	Path   string
-	Tree   *gotreesitter.BoundTree // consumer MUST call Close()
-	Lang   *LangEntry
-	Source []byte
-	Size   int64
-	Err    error
-	IsRead bool // false = I/O error during read, true = parse error (file was read OK)
+	Path   string                  // absolute path to the source file
+	Tree   *gotreesitter.BoundTree // parsed AST; nil on error. Consumer MUST call Close()
+	Lang   *LangEntry              // detected language entry
+	Source []byte                  // raw file contents; nil on I/O error
+	Size   int64                   // file size in bytes (from stat, before read)
+	Err    error                   // nil on success
+	IsRead bool                    // false = I/O error during read, true = file was read (parse may have failed)
 }
 
-// Close releases the BoundTree and nils Source to free memory. It is safe to
-// call Close multiple times and on a nil receiver.
+// Close releases the BoundTree's arena memory and nils both Tree and Source
+// to allow garbage collection. Close is safe to call multiple times and on a
+// nil receiver.
+//
+// Ownership rule: the consumer that receives a ParsedFile from the channel
+// owns it. Once Close is called, Tree becomes nil and must not be used.
+// Always defer Close or call it explicitly after processing each result:
+//
+//	for pf := range ch {
+//	    if pf.Err != nil { handleErr(pf); pf.Close(); continue }
+//	    process(pf.Tree, pf.Source)
+//	    pf.Close()
+//	}
 func (pf *ParsedFile) Close() {
 	if pf == nil {
 		return
@@ -79,23 +106,30 @@ func (pf *ParsedFile) Close() {
 	pf.Source = nil
 }
 
-// WalkStats summarizes the results of a WalkAndParse run.
+// WalkStats summarizes the results of a [WalkAndParse] run. The stats function
+// returned by WalkAndParse blocks until all work is done, then returns this
+// snapshot.
 type WalkStats struct {
-	FilesFound     int
-	FilesParsed    int
-	FilesFailed    int
-	FilesFiltered  int
-	LargeFiles     int
-	BinarySkipped  int
-	BytesParsed    int64
+	FilesFound    int   // files with a recognized language extension
+	FilesParsed   int   // files successfully parsed into a BoundTree
+	FilesFailed   int   // files that encountered read or parse errors
+	FilesFiltered int   // files skipped by SkipExtensions or ShouldParse
+	LargeFiles    int   // files at or above LargeFileThreshold
+	BinarySkipped int   // files detected as binary (NUL in first 8 KB)
+	BytesParsed   int64 // total bytes of successfully parsed files
 }
 
-// DefaultPolicy returns a ParsePolicy with sensible defaults:
-//   - LargeFileThreshold: 256 KB (overridable via GTS_LARGE_FILE_THRESHOLD)
-//   - MaxConcurrent: GOMAXPROCS (overridable via GTS_MAX_CONCURRENT)
+// DefaultPolicy returns a [ParsePolicy] with sensible defaults for typical
+// source repositories:
+//
+//   - LargeFileThreshold: 256 KB (env: GTS_LARGE_FILE_THRESHOLD, in bytes)
+//   - MaxConcurrent: runtime.GOMAXPROCS(0) (env: GTS_MAX_CONCURRENT)
 //   - ChannelBuffer: MaxConcurrent + 1
 //   - SkipDirs: .git, .graft, .hg, .svn, vendor, node_modules
 //   - SkipExtensions: .min.js, .min.css, .map, .wasm
+//
+// Environment variables are read on each call and must be positive integers.
+// Invalid or non-positive values are silently ignored (defaults apply).
 func DefaultPolicy() ParsePolicy {
 	threshold := int64(256 * 1024)
 	if v := os.Getenv("GTS_LARGE_FILE_THRESHOLD"); v != "" {
@@ -127,15 +161,41 @@ func DefaultPolicy() ParsePolicy {
 //
 // Pipeline:
 //  1. Walk with filepath.WalkDir, skipping SkipDirs and SkipExtensions.
-//  2. Detect language; skip unknown files.
-//  3. Call ShouldParse hook if set; skip if it returns false.
-//  4. Normal files (< LargeFileThreshold): acquire 1 semaphore slot, read+parse
+//  2. Detect language via [DetectLanguage]; skip unknown files.
+//  3. Skip binary files (NUL byte in first 8 KB).
+//  4. Call ShouldParse hook if set; skip if it returns false.
+//  5. Normal files (< LargeFileThreshold): acquire 1 semaphore slot, read+parse
 //     in a goroutine, send result, then release.
-//  5. Large files (>= LargeFileThreshold): acquire ALL slots, parse inline,
+//  6. Large files (>= LargeFileThreshold): acquire ALL slots, parse inline,
 //     send result, release ALL slots.
 //
-// Workers release the semaphore AFTER sending on the channel, not before.
-// ChannelBuffer is MaxConcurrent+1 to prevent deadlock.
+// Backpressure: workers release the semaphore AFTER sending on the channel,
+// not before. ChannelBuffer must be at least MaxConcurrent+1 to prevent
+// deadlock. A slow consumer naturally throttles the producer because workers
+// block on the channel send while holding their semaphore slot.
+//
+// Cancellation: pass a cancellable context to stop the walk early. In-flight
+// parses may complete, but no new files will be dispatched. The channel will
+// close promptly after cancellation.
+//
+// Usage:
+//
+//	policy := grammars.DefaultPolicy()
+//	ch, statsFn := grammars.WalkAndParse(ctx, "/path/to/repo", policy)
+//
+//	for pf := range ch {
+//	    if pf.Err != nil {
+//	        log.Printf("error: %s: %v", pf.Path, pf.Err)
+//	        pf.Close()
+//	        continue
+//	    }
+//	    root := pf.Tree.RootNode()
+//	    // ... inspect the AST ...
+//	    pf.Close() // MUST call to release tree memory
+//	}
+//
+//	stats := statsFn() // blocks until fully done; safe to call after draining
+//	fmt.Printf("parsed %d files (%d bytes)\n", stats.FilesParsed, stats.BytesParsed)
 func WalkAndParse(ctx context.Context, root string, policy ParsePolicy) (<-chan ParsedFile, func() WalkStats) {
 	ch := make(chan ParsedFile, policy.ChannelBuffer)
 
