@@ -39,10 +39,16 @@ type lrItemSet struct {
 	// all items. This helps preserve boundary-sensitive contexts in very large
 	// external-scanner grammars.
 	boundaryLAHash uint64
-	// annotationArgTag preserves predecessor-sensitive context only inside the
-	// local annotation-argument expression subgraph for large Scala-like grammars.
+	// annotationArgTag packs narrow predecessor-sensitive context bits that keep
+	// large Scala-like fallback automata from over-merging.
 	annotationArgTag uint32
 }
+
+const (
+	templateContextTagShift          = 16
+	templateContextTagMask    uint32 = 0x00ff0000
+	templateContextPendingTag uint32 = 1 << templateContextTagShift
+)
 
 func (set *lrItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 	if set.packedCoreIndex != nil {
@@ -83,6 +89,7 @@ type lrAction struct {
 	lhsSym  int   // LHS nonterminal of the production (for conflict detection)
 	lhsSyms []int // additional LHS symbols (when shifts from multiple rules merge)
 	isExtra bool  // true if this action comes from a nonterminal extra production
+	repeat  bool  // true if this shift continues a recursive repeat wrapper
 }
 
 type lrActionKind int
@@ -137,6 +144,8 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 		}
 		ctx.boundaryLookaheads = newBitset(tokenCount)
 		ctx.boundaryLookaheads.add(0) // EOF
+		ctx.definitionBoundaryTagBySym = make([]uint32, len(ng.Symbols))
+		ctx.templateDefinitionCarrierLHS = make([]bool, len(ng.Symbols))
 		for _, sym := range ng.ExternalSymbols {
 			if sym >= 0 && sym < tokenCount {
 				ctx.boundaryLookaheads.add(sym)
@@ -167,9 +176,14 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 				"var": true, "type": true, "extension": true, "case": true,
 				"opaque": true, "import": true, "package": true,
 			}
+			nextTemplateTag := uint32(2)
 			for sym := 0; sym < tokenCount; sym++ {
 				if definitionBoundary[ng.Symbols[sym].Name] {
 					ctx.boundaryLookaheads.add(sym)
+					if nextTemplateTag < 0xff {
+						ctx.definitionBoundaryTagBySym[sym] = nextTemplateTag << templateContextTagShift
+						nextTemplateTag++
+					}
 				}
 			}
 		}
@@ -213,6 +227,40 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 			"bindings":                 true,
 			"type_parameters":          true,
 		}
+		templateDefinitionCarrierNames := map[string]bool{
+			"annotation":               true,
+			"_block":                   true,
+			"template_body":            true,
+			"_indented_template_body":  true,
+			"_braced_template_body":    true,
+			"_braced_template_body1":   true,
+			"_braced_template_body2":   true,
+			"with_template_body":       true,
+			"_extension_template_body": true,
+			"class_definition":         true,
+			"_class_definition":        true,
+			"_class_constructor":       true,
+			"object_definition":        true,
+			"trait_definition":         true,
+			"enum_definition":          true,
+			"given_definition":         true,
+			"extension_definition":     true,
+			"function_definition":      true,
+			"function_declaration":     true,
+			"_function_declaration":    true,
+			"_function_constructor":    true,
+			"parameters":               true,
+			"parameter":                true,
+			"class_parameters":         true,
+			"class_parameter":          true,
+			"val_definition":           true,
+			"val_declaration":          true,
+			"_start_val":               true,
+			"var_definition":           true,
+			"var_declaration":          true,
+			"_start_var":               true,
+			"type_definition":          true,
+		}
 		for i, sym := range ng.Symbols {
 			switch sym.Name {
 			case "@":
@@ -239,7 +287,11 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 			if annotationArgCarrierNames[sym.Name] {
 				ctx.annotationArgCarrierLHS[i] = true
 			}
+			if templateDefinitionCarrierNames[sym.Name] {
+				ctx.templateDefinitionCarrierLHS[i] = true
+			}
 		}
+		expandTemplateDefinitionCarriers(ng, ctx.templateDefinitionCarrierLHS, tokenCount)
 		// Build production-by-LHS index for fast closure lookups.
 		for i := range ng.Productions {
 			lhs := ng.Productions[i].LHS
@@ -342,6 +394,7 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 						assoc:   prod.Assoc,
 						lhsSym:  prod.LHS,
 						isExtra: prod.IsExtra,
+						repeat:  ctx.isRepetitionShift(stateIdx, nextSym, targetState),
 					})
 				} else {
 					// Nonterminal → goto
@@ -366,8 +419,64 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 			}
 		}
 	}
+	propagateEntryShiftMetadata(tables, itemSets, ctx, ng)
 
 	return tables, ctx, nil
+}
+
+// propagateEntryShiftMetadata preserves the precedence/associativity of an
+// enclosing production when a conflict-relevant terminal shift comes from the
+// immediately-entered nonterminal at the dot. Without this, conflicts like
+// call-vs-unary can see the shift side as the precedence of the entry rule
+// (for example argument_list) instead of the higher-precedence enclosing rule
+// (for example call_expression).
+func propagateEntryShiftMetadata(tables *LRTables, itemSets []lrItemSet, ctx *lrContext, ng *NormalizedGrammar) {
+	if tables == nil || ctx == nil {
+		return
+	}
+	tokenCount := ctx.tokenCount
+	for stateIdx, itemSet := range itemSets {
+		for _, ce := range itemSet.cores {
+			prod := &ng.Productions[ce.prodIdx]
+			if ce.dot >= len(prod.RHS) {
+				continue
+			}
+			nextSym := prod.RHS[ce.dot]
+			if nextSym < tokenCount {
+				continue
+			}
+
+			ctx.firstSets[nextSym].forEach(func(la int) {
+				acts := tables.ActionTable[stateIdx][la]
+				for _, act := range acts {
+					if act.kind != lrShift || !shiftMatchesSymbol(act, nextSym) {
+						continue
+					}
+					tables.addAction(stateIdx, la, lrAction{
+						kind:    lrShift,
+						state:   act.state,
+						prec:    prod.Prec,
+						assoc:   prod.Assoc,
+						lhsSym:  prod.LHS,
+						isExtra: prod.IsExtra,
+						repeat:  act.repeat,
+					})
+				}
+			})
+		}
+	}
+}
+
+func shiftMatchesSymbol(act lrAction, sym int) bool {
+	if act.lhsSym == sym {
+		return true
+	}
+	for _, lhs := range act.lhsSyms {
+		if lhs == sym {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *LRTables) addAction(state, sym int, action lrAction) {
@@ -382,6 +491,9 @@ func (t *LRTables) addAction(state, sym int, action lrAction) {
 				}
 				if a.isExtra && !action.isExtra {
 					existing[i].isExtra = false
+				}
+				if action.repeat {
+					existing[i].repeat = true
 				}
 				if action.prec > a.prec {
 					existing[i].prec = action.prec
@@ -426,6 +538,10 @@ type lrContext struct {
 	// Item set management
 	itemSets    []lrItemSet
 	transitions map[int]map[int]int
+	// LALR transition follow sets are retained so local LR(1) splitting can
+	// reconstruct nonterminal predecessor partitions with meaningful lookaheads
+	// instead of the empty LR(0) kernels emitted by DeRemer/Pennello.
+	lalrFollowByTransition map[[2]int]bitset
 
 	// Merge provenance tracking (diagnostic metadata, does not affect construction)
 	provenance                 *mergeProvenance
@@ -451,17 +567,19 @@ type lrContext struct {
 	// Narrow annotation-argument tagging metadata. These are precomputed once so
 	// buildItemSets can cheaply preserve declaration-family context only while a
 	// state remains inside annotation arguments.
-	annotationAtSym         int
-	annotationDefSym        int
-	annotationOpenParenSym  int
-	annotationCloseParenSym int
-	bracedTemplateBodySym   int
-	bracedTemplateBody1Sym  int
-	bracedTemplateBody2Sym  int
-	annotationArgCarrierLHS []bool
-	operatorIdentSym        int
-	operatorStarSym         int
-	nonNullLiteralSym       int
+	annotationAtSym              int
+	annotationDefSym             int
+	annotationOpenParenSym       int
+	annotationCloseParenSym      int
+	bracedTemplateBodySym        int
+	bracedTemplateBody1Sym       int
+	bracedTemplateBody2Sym       int
+	definitionBoundaryTagBySym   []uint32
+	annotationArgCarrierLHS      []bool
+	templateDefinitionCarrierLHS []bool
+	operatorIdentSym             int
+	operatorStarSym              int
+	nonNullLiteralSym            int
 
 	// Reusable closure queue scratch keeps closureToSet/closureIncremental from
 	// reallocating worklists and in-queue tracking on every item-set build.
@@ -805,6 +923,7 @@ func (b *extraChainBuilder) addProdContinuation(stateIdx, prodIdx, pos int, foll
 			assoc:   prod.Assoc,
 			lhsSym:  prod.LHS,
 			isExtra: prod.IsExtra,
+			repeat:  b.ctx.isRepetitionShift(stateIdx, nextSym, targetState),
 		})
 		return
 	}
@@ -854,6 +973,7 @@ func (b *extraChainBuilder) addNonterminalEntries(stateIdx, sym int, follow bits
 				assoc:   prod.Assoc,
 				lhsSym:  prod.LHS,
 				isExtra: prod.IsExtra,
+				repeat:  b.ctx.isRepetitionShift(stateIdx, firstSym, targetState),
 			})
 			continue
 		}
@@ -1482,6 +1602,168 @@ func (ctx *lrContext) isBracedTemplateFamilySet(set *lrItemSet) bool {
 	return false
 }
 
+func expandTemplateDefinitionCarriers(ng *NormalizedGrammar, carriers []bool, tokenCount int) {
+	if len(carriers) == 0 {
+		return
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, prod := range ng.Productions {
+			if prod.LHS < 0 || prod.LHS >= len(carriers) || carriers[prod.LHS] {
+				continue
+			}
+			if !isTemplateDefinitionCarrierWrapper(prod, carriers, tokenCount) {
+				continue
+			}
+			carriers[prod.LHS] = true
+			changed = true
+		}
+	}
+}
+
+func isTemplateDefinitionCarrierWrapper(prod Production, carriers []bool, tokenCount int) bool {
+	switch len(prod.RHS) {
+	case 1:
+		sym := prod.RHS[0]
+		return sym >= tokenCount && sym < len(carriers) && carriers[sym]
+	case 2:
+		left, right := prod.RHS[0], prod.RHS[1]
+		if left == prod.LHS && right >= tokenCount && right < len(carriers) && carriers[right] {
+			return true
+		}
+		if right == prod.LHS && left >= tokenCount && left < len(carriers) && carriers[left] {
+			return true
+		}
+	}
+	return false
+}
+
+func (ctx *lrContext) isTemplateDefinitionCarrierSet(set *lrItemSet) bool {
+	if len(ctx.templateDefinitionCarrierLHS) == 0 {
+		return false
+	}
+	for _, ce := range set.cores {
+		prod := ctx.ng.Productions[ce.prodIdx]
+		if prod.LHS >= 0 && prod.LHS < len(ctx.templateDefinitionCarrierLHS) && ctx.templateDefinitionCarrierLHS[prod.LHS] {
+			return true
+		}
+	}
+	return false
+}
+
+func (ctx *lrContext) isCompletedRepeatWrapperForSymbol(set *lrItemSet, sym int) bool {
+	return ctx.completedRepeatWrapperLHS(set, sym) >= 0
+}
+
+func (ctx *lrContext) completedRepeatWrapperLHS(set *lrItemSet, sym int) int {
+	return ctx.completedRepeatWrapperLHSAcrossTransitions(set, sym, false)
+}
+
+func (ctx *lrContext) completedRepeatWrapperLHSAcrossTransitions(set *lrItemSet, sym int, allowTerminal bool) int {
+	if sym < ctx.tokenCount {
+		if !allowTerminal {
+			return -1
+		}
+	}
+	for _, ce := range set.cores {
+		prod := ctx.ng.Productions[ce.prodIdx]
+		if ce.dot != len(prod.RHS) || len(prod.RHS) != 1 || prod.RHS[0] != sym {
+			continue
+		}
+		if prod.LHS < 0 || prod.LHS >= len(ctx.ng.Symbols) {
+			continue
+		}
+		if strings.Contains(ctx.ng.Symbols[prod.LHS].Name, "repeat") {
+			return prod.LHS
+		}
+	}
+	return -1
+}
+
+func (ctx *lrContext) isRepetitionShift(sourceState, sym, targetState int) bool {
+	if ctx == nil || sourceState < 0 || targetState < 0 || sourceState >= len(ctx.itemSets) || targetState >= len(ctx.itemSets) {
+		return false
+	}
+	lhs := ctx.completedRepeatWrapperLHSAcrossTransitions(&ctx.itemSets[targetState], sym, true)
+	if lhs < 0 {
+		return false
+	}
+	return ctx.stateHasRecursiveRepeatSource(&ctx.itemSets[sourceState], lhs)
+}
+
+func (ctx *lrContext) stateHasRecursiveRepeatSource(set *lrItemSet, lhs int) bool {
+	if set == nil || lhs < 0 {
+		return false
+	}
+	for _, ce := range set.cores {
+		prod := ctx.ng.Productions[ce.prodIdx]
+		if prod.LHS != lhs || ce.dot != len(prod.RHS) {
+			continue
+		}
+		for _, sym := range prod.RHS {
+			if sym == lhs {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (ctx *lrContext) repeatWrapperSourceTagForTransition(sourceState, sym int, closedSet *lrItemSet) uint32 {
+	if os.Getenv("GOT_LR_DISABLE_CONTEXT_TAGS") == "1" {
+		return 0
+	}
+	if len(ctx.ng.Productions) < 2000 || sourceState < 0 || sourceState >= len(ctx.itemSets) {
+		return 0
+	}
+	lhs := ctx.completedRepeatWrapperLHS(closedSet, sym)
+	if lhs < 0 {
+		return 0
+	}
+	if ctx.stateHasRecursiveRepeatSource(&ctx.itemSets[sourceState], lhs) {
+		return 1 << 24
+	}
+	return 0
+}
+
+func (ctx *lrContext) templateContextTagForTransition(sourceState, sym int, closedSet *lrItemSet) uint32 {
+	if os.Getenv("GOT_LR_DISABLE_CONTEXT_TAGS") == "1" {
+		return 0
+	}
+	if len(ctx.ng.Productions) < 2000 || sourceState < 0 || sourceState >= len(ctx.itemSets) {
+		return 0
+	}
+
+	sourceCarrier := ctx.isBracedTemplateFamilySet(&ctx.itemSets[sourceState]) ||
+		ctx.isTemplateDefinitionCarrierSet(&ctx.itemSets[sourceState])
+	targetCarrier := ctx.isBracedTemplateFamilySet(closedSet) ||
+		ctx.isTemplateDefinitionCarrierSet(closedSet)
+
+	srcTag := ctx.itemSets[sourceState].annotationArgTag & templateContextTagMask
+	if srcTag != 0 && ctx.isCompletedRepeatWrapperForSymbol(closedSet, sym) {
+		return srcTag
+	}
+	if !sourceCarrier && !targetCarrier {
+		return 0
+	}
+	if ctx.annotationAtSym >= 0 && sym == ctx.annotationAtSym && targetCarrier {
+		if srcTag != 0 && srcTag != templateContextPendingTag {
+			return srcTag
+		}
+		return templateContextPendingTag
+	}
+	if sym >= 0 && sym < len(ctx.definitionBoundaryTagBySym) {
+		if tag := ctx.definitionBoundaryTagBySym[sym]; tag != 0 && (sourceCarrier || srcTag != 0 || targetCarrier) {
+			return tag
+		}
+	}
+	if srcTag != 0 && targetCarrier {
+		return srcTag
+	}
+	return 0
+}
+
 func (ctx *lrContext) operatorLiteralMergeTag(set *lrItemSet) uint32 {
 	if os.Getenv("GOT_LR_DISABLE_CONTEXT_TAGS") == "1" {
 		return 0
@@ -1768,6 +2050,8 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 
 			closedSet := ctx.closureToSet(advanced)
 			closedSet.annotationArgTag = ctx.annotationArgTagForTransition(stateIdx, &closedSet)
+			closedSet.annotationArgTag |= ctx.templateContextTagForTransition(stateIdx, sym, &closedSet)
+			closedSet.annotationArgTag |= ctx.repeatWrapperSourceTagForTransition(stateIdx, sym, &closedSet)
 			closedSet.annotationArgTag |= ctx.operatorLiteralMergeTag(&closedSet)
 			ctx.gotoAdvancedScratch = advanced[:0]
 
@@ -2012,6 +2296,10 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 
 	// Shift/reduce conflict.
 	if len(shifts) > 0 && len(reduces) > 0 {
+		if repeated, ok := repetitionShiftActions(shifts, reduces, ng); ok {
+			return repeated, nil
+		}
+
 		shift := shifts[0]
 		reduce := reduces[0]
 		prod := &ng.Productions[reduce.prodIdx]
@@ -2070,11 +2358,50 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 	return actions, nil
 }
 
+func repetitionShiftActions(shifts, reduces []lrAction, ng *NormalizedGrammar) ([]lrAction, bool) {
+	if len(shifts) != 1 || len(reduces) == 0 {
+		return nil, false
+	}
+	for _, r := range reduces {
+		if !isRecursiveRepeatReduce(r, ng) {
+			return nil, false
+		}
+	}
+	kept := make([]lrAction, 0, len(reduces)+1)
+	kept = append(kept, reduces...)
+	shift := shifts[0]
+	shift.repeat = true
+	kept = append(kept, shift)
+	return kept, true
+}
+
+func isRecursiveRepeatReduce(action lrAction, ng *NormalizedGrammar) bool {
+	if action.kind != lrReduce || action.prodIdx < 0 || action.prodIdx >= len(ng.Productions) {
+		return false
+	}
+	prod := &ng.Productions[action.prodIdx]
+	if prod.LHS < 0 || prod.LHS >= len(ng.Symbols) {
+		return false
+	}
+	if !strings.Contains(ng.Symbols[prod.LHS].Name, "repeat") {
+		return false
+	}
+	for _, sym := range prod.RHS {
+		if sym == prod.LHS {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *NormalizedGrammar, cache *conflictResolutionCache) ([]lrAction, error) {
 	if allInDeclaredConflict(reduces, ng, cache) {
 		return reduces, nil
 	}
 	if shouldKeepRepeatedAnnotationReduces(lookaheadSym, reduces, ng) {
+		return reduces, nil
+	}
+	if shouldKeepNestedWrapperReduces(reduces, ng) {
 		return reduces, nil
 	}
 
@@ -2130,6 +2457,45 @@ func shouldKeepRepeatedAnnotationReduces(lookaheadSym int, reduces []lrAction, n
 		}
 	}
 	return true
+}
+
+func shouldKeepNestedWrapperReduces(reduces []lrAction, ng *NormalizedGrammar) bool {
+	if len(reduces) < 2 {
+		return false
+	}
+
+	wrappedSyms := make(map[int]bool)
+	hasEnclosingReduce := false
+	for _, r := range reduces {
+		prod := &ng.Productions[r.prodIdx]
+		if len(prod.RHS) == 1 &&
+			prod.LHS >= 0 &&
+			prod.LHS < len(ng.Symbols) &&
+			strings.HasPrefix(ng.Symbols[prod.LHS].Name, "_") {
+			wrappedSyms[prod.RHS[0]] = true
+			continue
+		}
+		hasEnclosingReduce = true
+	}
+	if len(wrappedSyms) == 0 || !hasEnclosingReduce {
+		return false
+	}
+
+	for _, r := range reduces {
+		prod := &ng.Productions[r.prodIdx]
+		if len(prod.RHS) == 1 &&
+			prod.LHS >= 0 &&
+			prod.LHS < len(ng.Symbols) &&
+			strings.HasPrefix(ng.Symbols[prod.LHS].Name, "_") {
+			continue
+		}
+		for _, sym := range prod.RHS {
+			if wrappedSyms[sym] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // shiftReduceInConflictGroup checks whether any (reduce LHS, shift LHS) pair
