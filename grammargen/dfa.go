@@ -725,11 +725,25 @@ func computeLexModes(
 	}
 
 	// External tokens are handled by the external scanner, not the DFA.
-	// Exclude them from lex mode computation to avoid creating spurious
-	// lex modes based on external token validity differences.
+	// Exclude "pure external" tokens (those that ONLY appear as externals)
+	// from lex mode computation. However, external tokens that are also
+	// regular terminals (like Python's ")", "]", "}", "except") MUST be
+	// included in the DFA so the main lexer can produce them. These
+	// dual-role tokens appear in the parse action table for various states.
 	extSet := make(map[int]bool)
 	for _, e := range externalSymbols {
-		extSet[e] = true
+		// Check if this external symbol also appears in any state's action table.
+		// If so, it's a dual-role token and must be in the DFA.
+		isDualRole := false
+		for state := 0; state < stateCount; state++ {
+			if actionLookup(state, e) {
+				isDualRole = true
+				break
+			}
+		}
+		if !isDualRole {
+			extSet[e] = true
+		}
 	}
 
 	modeMap := make(map[string]int) // key → mode index
