@@ -284,9 +284,9 @@
     },
     "swift": {
       "eligible": 25,
-      "no_error": 25,
-      "sexpr_parity": 21,
-      "deep_parity": 16
+      "no_error": 15,
+      "sexpr_parity": 11,
+      "deep_parity": 11
     },
     "todotxt": {
       "eligible": 19,
