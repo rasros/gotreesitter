@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for tags and release notes while still in `0.x`.
 
+## [0.7.0] - 2026-03-15
+
+### Added
+- Incremental parsing engine: fast path for token-invariant leaf edits, top-level node reuse after edits, dirty-flag clearing along modified path only, and external scanner checkpoints for incremental reuse.
+- Adaptive arena sizing and GSS capacity hinting for incremental and full parses.
+- Parser timeout and cancellation support (`WithTimeout`, `WithCancellation`).
+- Parser pool for concurrent parse workloads.
+- Arena memory budget to prevent OOM crashes.
+- Linguist-style language detection: filename, extension, and interpreter/shebang-based detection with display names (`cmd/gen_linguist`, `grammars/linguist_*.go`).
+- Syntax highlighting queries for 40+ additional languages including top-50 grammars, norg, promql, and tmux.
+- Native TOML lexer with date/time parsing.
+- GLR-aware C preprocessor lexer with function-like macros, signed literals, and synthetic endif.
+- Query metadata accessors for captures, strings, and pattern ranges.
+- Query match limits, depth bounds, and symbol alias support.
+- `Tree.Copy`, `Parser.Language`, `Node.Edit`, and `RootNodeWithOffset` API additions.
+- Parser logging and tree DOT visualization for debugging.
+- Multi-strategy full parse retry with bounded escalation.
+- Dense token lookup for small parser states.
+- Real-world corpus parity board and reporter (`cgo_harness`).
+- GLR canary set and cap-pressure tests for parity regression detection.
+- CI grammar freshness validation, tiered benchmark baselines, and coverage ratchet.
+
+### Changed
+- Structural language parity coverage expanded from 54 to 100 curated languages.
+- Parser reduce hot path optimized: scratch buffers, pre-computed alias sequences, fast visible reduce path, deferred hidden node flattening to visible parent boundary.
+- GLR engine tuned: lazy GSS node hashing in single-stack mode, key-based stack culling, small-path merge optimization, temporary stack oversubscription before culling.
+- Query engine optimized: dense array for root pattern lookup, compile-time alternation matching index, avoid heap allocation for candidate indices.
+- Go and TypeScript normalization refactored to symbol-based context; span attribution switched on language.
+
+### Fixed
+- Top-50 parity burndown: broad fixes across lexers, normalization, scanners, and GLR paths reducing degraded grammars to 0.
+- GLR robustness: deterministic stack culling, correct tie-breaking for duplicate stacks, all-dead stack recovery, preferred visible tokens in union DFA on exact ties, higher action specificity on same lexeme.
+- External scanner fixes: correct MarkEnd ordering, retry with state validation table, deterministic external-scanner mode for parity.
+- Field attribution: prevent inherited field misassignment across GLR branches, correct field assignment for C# join clauses, skip inherited field projection when target span has direct fields.
+- Span calculation: correct span for invisible nodes in GLR reduce, chain hidden spans via backward scan, extend parent span to window with predecessor boundary clamping.
+- Query fixes: handle repeated field names with sibling capture accumulation, multi-sibling grouping patterns with wildcard root.
+- Zero-width token handling to match C tree-sitter semantics.
+- Byte offset-based UTF-8 column tracking in lexer.
+- Infinite missing-token recovery cycles prevented.
+- Conflicting inherited field IDs in `buildFieldIDs` resolved.
+
 ## [0.6.0] - 2026-03-01
 
 ### Added
@@ -61,6 +102,7 @@ for tags and release notes while still in `0.x`.
 - Initial standalone pure-Go runtime module.
 - External scanner VM foundation and base parser/lexer/tree infrastructure.
 
+[0.7.0]: https://github.com/odvcencio/gotreesitter/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/odvcencio/gotreesitter/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/odvcencio/gotreesitter/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/odvcencio/gotreesitter/compare/v0.4.0...v0.5.1
