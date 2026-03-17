@@ -34,11 +34,12 @@ func bytesToStringNoCopy(b []byte) string {
 
 // Lexer tokenizes source text using a table-driven DFA.
 type Lexer struct {
-	states []LexState
-	source []byte
-	pos    int
-	row    uint32
-	col    uint32
+	states          []LexState
+	source          []byte
+	pos             int
+	row             uint32
+	col             uint32
+	immediateTokens []bool // symbol IDs that are token.immediate(); rejected after whitespace skip
 }
 
 // NewLexer creates a new Lexer that will tokenize source using the given
@@ -124,17 +125,23 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 		st := &l.states[int(curState)]
 
 		if st.AcceptToken > 0 || st.Skip {
-			newPrio := st.AcceptPriority
-			if acceptPos < 0 || newPrio < acceptPriorityBest || (newPrio == acceptPriorityBest && scanPos > acceptPos) {
-				acceptPos = scanPos
-				acceptRow = scanRow
-				acceptCol = scanCol
-				acceptStartPos = tokenStartPos
-				acceptStartRow = tokenStartRow
-				acceptStartCol = tokenStartCol
-				acceptSymbol = st.AcceptToken
-				acceptSkip = st.Skip
-				acceptPriorityBest = newPrio
+			// Reject immediate tokens that matched after whitespace was
+			// consumed. Immediate tokens must match at the original position.
+			isImmediate := st.AcceptToken > 0 && int(st.AcceptToken) < len(l.immediateTokens) && l.immediateTokens[st.AcceptToken]
+			skippedWhitespace := tokenStartPos > startPos
+			if !(isImmediate && skippedWhitespace) {
+				newPrio := st.AcceptPriority
+				if acceptPos < 0 || newPrio < acceptPriorityBest || (newPrio == acceptPriorityBest && scanPos > acceptPos) {
+					acceptPos = scanPos
+					acceptRow = scanRow
+					acceptCol = scanCol
+					acceptStartPos = tokenStartPos
+					acceptStartRow = tokenStartRow
+					acceptStartCol = tokenStartCol
+					acceptSymbol = st.AcceptToken
+					acceptSkip = st.Skip
+					acceptPriorityBest = newPrio
+				}
 			}
 		}
 
