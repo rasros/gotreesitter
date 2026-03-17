@@ -9,6 +9,74 @@ import (
 	"github.com/odvcencio/gotreesitter"
 )
 
+// buildFollowTokensFunc returns a function that, given a parser state,
+// returns the terminal symbols valid in states reachable after a reduce.
+// This expands lex modes so that keywords like "AS" in dockerfile can be
+// recognized even when parsing inside a production like image_name where
+// "AS" isn't directly valid but becomes valid after reducing.
+func buildFollowTokensFunc(tables *LRTables, tokenCount int) func(int) []int {
+	if tables == nil {
+		return nil
+	}
+	// Cache per state to avoid recomputation
+	cache := make(map[int][]int)
+	return func(state int) []int {
+		if cached, ok := cache[state]; ok {
+			return cached
+		}
+		seen := make(map[int]bool)
+		acts, ok := tables.ActionTable[state]
+		if !ok {
+			cache[state] = nil
+			return nil
+		}
+		// For each reduce action in this state, find the GOTO target
+		// and collect its valid terminal symbols
+		for _, actions := range acts {
+			for _, act := range actions {
+				if act.kind != lrReduce {
+					continue
+				}
+				// After reducing, the parser pops and does a GOTO.
+				// We can't easily trace the exact GOTO without the full
+				// stack, but we can approximate: collect terminals valid
+				// in ANY state that has a GOTO for this production's LHS.
+				lhsSym := act.lhsSym
+				if lhsSym <= 0 {
+					continue
+				}
+				for targetState := 0; targetState < tables.StateCount; targetState++ {
+					targetActs, ok := tables.ActionTable[targetState]
+					if !ok {
+						continue
+					}
+					// Check if this state has a GOTO for the reduce LHS
+					if gotoActs, ok := targetActs[lhsSym]; ok && len(gotoActs) > 0 {
+						for _, ga := range gotoActs {
+							if ga.kind == lrShift {
+								// The GOTO target state — collect its terminals
+								if gotoStateActs, ok := tables.ActionTable[ga.state]; ok {
+									for sym := range gotoStateActs {
+										if sym > 0 && sym < tokenCount && !seen[sym] {
+											seen[sym] = true
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		result := make([]int, 0, len(seen))
+		for sym := range seen {
+			result = append(result, sym)
+		}
+		cache[state] = result
+		return result
+	}
+}
+
 // ConflictKind describes the type of LR conflict.
 type ConflictKind int
 
@@ -498,6 +566,7 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 		ng.WordSymbolID,
 		keywordSet,
 		termPatSyms,
+		buildFollowTokensFunc(tables, tokenCount),
 	)
 
 	skipExtras := computeSkipExtras(ng)
@@ -679,6 +748,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 		ng.WordSymbolID,
 		keywordSet,
 		termPatSyms,
+		buildFollowTokensFunc(tables, tokenCount),
 	)
 
 	skipExtras := computeSkipExtras(ng)

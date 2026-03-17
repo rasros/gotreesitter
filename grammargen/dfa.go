@@ -726,6 +726,7 @@ func computeLexModes(
 	wordSymbolID int,
 	keywordSymbols map[int]bool,
 	terminalPatternSyms map[int]bool, // symbols that have DFA terminal patterns
+	followTokens func(state int) []int, // additional tokens from reduce-follow expansion (may be nil)
 ) ([]lexModeSpec, []int) {
 	extraSet := make(map[int]bool)
 	hasTerminalExtras := false
@@ -776,6 +777,24 @@ func computeLexModes(
 				}
 				if keywordSymbols[sym] {
 					hasKeyword = true
+				}
+			}
+		}
+
+		// Include tokens from reduce-follow expansion: when the parser can
+		// reduce in this state, the tokens valid in the GOTO target state
+		// should also be recognizable by the lexer. This ensures keywords
+		// like "AS" in dockerfile's image_spec context are lexed correctly
+		// even though they're not directly in this state's action table.
+		if followTokens != nil {
+			for _, sym := range followTokens(state) {
+				if sym > 0 && sym < tokenCount && !extSet[sym] {
+					validSyms[sym] = true
+					for _, longerSym := range stringPrefixExtensions[sym] {
+						if !extSet[longerSym] {
+							validSyms[longerSym] = true
+						}
+					}
 				}
 			}
 		}
