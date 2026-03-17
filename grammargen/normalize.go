@@ -99,21 +99,23 @@ type NormalizedGrammar struct {
 
 // symbolTable is used during normalization.
 type symbolTable struct {
-	byName           map[string]int // terminal name → symbol ID
-	nontermByName    map[string]int // nonterminal name → symbol ID
-	symbols          []SymbolInfo
-	nextID           int
-	fieldMap         map[string]int
-	fields           []string
-	binaryRepeatMode bool // use tree-sitter binary repeat helper shape
+	byName             map[string]int // terminal name → symbol ID
+	nontermByName      map[string]int // nonterminal name → symbol ID
+	namedTokenByName   map[string]int // named token name → symbol ID (when distinct from anonymous)
+	symbols            []SymbolInfo
+	nextID             int
+	fieldMap           map[string]int
+	fields             []string
+	binaryRepeatMode   bool // use tree-sitter binary repeat helper shape
 }
 
 func newSymbolTable() *symbolTable {
 	st := &symbolTable{
-		byName:        make(map[string]int),
-		nontermByName: make(map[string]int),
-		fieldMap:      make(map[string]int),
-		fields:        []string{""}, // index 0 is always ""
+		byName:           make(map[string]int),
+		nontermByName:    make(map[string]int),
+		namedTokenByName: make(map[string]int),
+		fieldMap:         make(map[string]int),
+		fields:           []string{""}, // index 0 is always ""
 	}
 	// Symbol 0 = "end" (EOF). Tree-sitter C marks this Named=true.
 	st.addSymbol("end", SymbolInfo{
@@ -182,10 +184,27 @@ func (st *symbolTable) lookup(name string) (int, bool) {
 	return id, ok
 }
 
-// lookupNonterm returns the nonterminal symbol ID. Falls back to byName
-// for named tokens that are treated like nonterminals in Sym() references.
+// lookupNonterm returns the nonterminal symbol ID. Falls back to
+// namedTokenByName (for named tokens that are distinct from anonymous
+// terminals with the same name), then to byName.
 func (st *symbolTable) lookupNonterm(name string) (int, bool) {
 	if id, ok := st.nontermByName[name]; ok {
+		return id, ok
+	}
+	// Prefer the named token when it was split from an anonymous terminal.
+	// This ensures Sym("number") in literal_type resolves to the named
+	// TOKEN symbol, not the anonymous keyword string.
+	if id, ok := st.namedTokenByName[name]; ok {
+		return id, ok
+	}
+	return st.lookup(name)
+}
+
+// lookupNamedToken returns the named token symbol ID. If the named token
+// was split from an anonymous terminal, returns the split ID; otherwise
+// falls back to byName.
+func (st *symbolTable) lookupNamedToken(name string) (int, bool) {
+	if id, ok := st.namedTokenByName[name]; ok {
 		return id, ok
 	}
 	return st.lookup(name)
@@ -301,6 +320,33 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 				kind = SymbolTerminal
 			}
 		}
+		// When a complex TOKEN rule (not a string-only token) has the same
+		// name as an already-registered anonymous string literal, they must
+		// get distinct symbol IDs. Example: TS has STRING "number" in
+		// predefined_type (the keyword) and TOKEN(CHOICE(...)) number (the
+		// numeric literal pattern). Tree-sitter C gives them different IDs;
+		// without this split, productions for predefined_type and literal_type
+		// become indistinguishable.
+		if named && kind == SymbolNamedToken {
+			if existingID, exists := st.lookup(name); exists &&
+				!st.symbols[existingID].Named && st.symbols[existingID].Kind == SymbolTerminal {
+				rule := g.Rules[name]
+				if rule != nil && !isStringOnlyToken(rule) {
+					// Allocate a new symbol for the named token, keeping
+					// the anonymous terminal at its original ID for string
+					// literal references.
+					newID := len(st.symbols)
+					st.namedTokenByName[name] = newID
+					st.symbols = append(st.symbols, SymbolInfo{
+						Name:    displayName,
+						Visible: visible,
+						Named:   named,
+						Kind:    kind,
+					})
+					continue
+				}
+			}
+		}
 		st.addSymbol(name, SymbolInfo{
 			Name:    displayName,
 			Visible: visible,
@@ -393,7 +439,10 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	var keywordEntries []TerminalPattern
 	var wordSymbolID int
 	if g.Word != "" {
-		wordSymbolID, _ = st.lookup(g.Word)
+		// Use lookupNamedToken so that if the word token was split from
+		// an anonymous terminal (e.g. identifier TOKEN colliding with
+		// "identifier" string), we get the named token's symbol ID.
+		wordSymbolID, _ = st.lookupNamedToken(g.Word)
 		keywordSet, keywordSymbols, keywordEntries = identifyKeywords(g, st, stringLiterals)
 	}
 
@@ -479,6 +528,39 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 			}
 		}
 		conflicts = append(conflicts, syms)
+	}
+
+	// Phase 8b: Extend conflict groups to include auxiliary repeat rules.
+	// When a grammar rule X is in a conflict group, auxiliary repeat rules
+	// originating from X (e.g. X_repeat52) should inherit that membership.
+	// Without this, R/R conflicts between a parent rule and its repeat
+	// auxiliary are resolved deterministically (killing the repeat path)
+	// instead of being kept as GLR as tree-sitter C intends.
+	{
+		// Build reverse map: grammar rule name → set of conflict group indices.
+		conflictGroupsByName := make(map[string][]int)
+		for gi, cgroup := range g.Conflicts {
+			for _, name := range cgroup {
+				conflictGroupsByName[name] = append(conflictGroupsByName[name], gi)
+			}
+		}
+		// For each auxiliary rule, check if its originating rule is in any
+		// conflict group. If so, add the auxiliary's symbol ID to that group.
+		for auxName, originName := range auxOrigin {
+			gis := conflictGroupsByName[originName]
+			if len(gis) == 0 {
+				continue
+			}
+			auxID, ok := st.lookupNonterm(auxName)
+			if !ok {
+				continue
+			}
+			for _, gi := range gis {
+				if gi < len(conflicts) {
+					conflicts[gi] = append(conflicts[gi], auxID)
+				}
+			}
+		}
 	}
 
 	// Phase 9: Resolve supertypes.
@@ -1549,7 +1631,7 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 
 	// String-only named tokens: prec-based priority, greedy decides ties.
 	for _, name := range stringNamedTokens {
-		id, ok := st.lookup(name)
+		id, ok := st.lookupNamedToken(name)
 		if !ok {
 			continue
 		}
@@ -1590,7 +1672,7 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 
 	// Non-string named tokens: prec-based priority, greedy decides ties.
 	for _, name := range patternNamedTokens {
-		id, ok := st.lookup(name)
+		id, ok := st.lookupNamedToken(name)
 		if !ok {
 			continue
 		}
