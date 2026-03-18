@@ -403,12 +403,27 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 				}
 
 				if nextSym < tokenCount {
-					// Terminal → shift action
+					// Terminal → shift action.
+					// For closure-derived items (dot == 0), suppress the production's
+					// own precedence. Tree-sitter's conflict resolver only considers
+					// shift precedence from items whose dot has advanced past position 0
+					// (step_index > 0). Without this, a high-precedence closure item
+					// (e.g. unary_expression prec=14 within sizeof's operand) can
+					// dominate the shift's precedence and incorrectly win S/R conflicts
+					// against the enclosing reduce (e.g. sizeof_expression prec=13).
+					// The enclosing kernel item's precedence is propagated afterward
+					// by propagateEntryShiftMetadata.
+					shiftPrec := prod.Prec
+					shiftAssoc := prod.Assoc
+					if ce.dot == 0 {
+						shiftPrec = 0
+						shiftAssoc = AssocNone
+					}
 					tables.addAction(stateIdx, nextSym, lrAction{
 						kind:    lrShift,
 						state:   targetState,
-						prec:    prod.Prec,
-						assoc:   prod.Assoc,
+						prec:    shiftPrec,
+						assoc:   shiftAssoc,
 						lhsSym:  prod.LHS,
 						isExtra: prod.IsExtra,
 						repeat:  ctx.isRepetitionShift(stateIdx, nextSym, targetState),
