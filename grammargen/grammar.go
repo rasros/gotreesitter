@@ -63,9 +63,10 @@ type Grammar struct {
 	Word              string
 	Supertypes        []string
 	Tests             []TestCase // embedded test cases
-	EnableLRSplitting bool       // opt-in: attempt LR(1) state splitting for merge pathology
-	BinaryRepeatMode  bool       // use tree-sitter's binary repeat helper shape (aux→seq(aux,aux)|inner)
-	Precedences       [][]PrecEntry // ordered precedence levels (each level: earlier = higher prec)
+	EnableLRSplitting  bool       // opt-in: attempt LR(1) state splitting for merge pathology
+	BinaryRepeatMode   bool       // use tree-sitter's binary repeat helper shape (aux→seq(aux,aux)|inner)
+	Precedences        [][]PrecEntry // ordered precedence levels (each level: earlier = higher prec)
+	ChoiceLiftThreshold int       // if >0, lift inline CHOICE nodes with more alternatives than this into auxiliary nonterminals to prevent production explosion
 }
 
 // NewGrammar creates a new grammar with the given name.

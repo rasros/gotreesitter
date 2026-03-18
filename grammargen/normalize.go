@@ -113,7 +113,8 @@ type symbolTable struct {
 	nextID             int
 	fieldMap           map[string]int
 	fields             []string
-	binaryRepeatMode   bool // use tree-sitter binary repeat helper shape
+	binaryRepeatMode    bool // use tree-sitter binary repeat helper shape
+	choiceLiftThreshold int  // if >0, lift inline CHOICE nodes exceeding this width
 }
 
 func newSymbolTable() *symbolTable {
@@ -251,6 +252,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 
 	st := newSymbolTable()
 	st.binaryRepeatMode = g.BinaryRepeatMode
+	st.choiceLiftThreshold = g.ChoiceLiftThreshold
 	ng := &NormalizedGrammar{}
 
 	// Phase 1: Collect all string literals and register terminal symbols.
@@ -1328,18 +1330,20 @@ func prepareRule(r *Rule, parentName string, st *symbolTable, auxRules map[strin
 	switch r.Kind {
 	case RuleRepeat:
 		preparedInner := prepareRule(cloneRule(r.Children[0]), parentName, st, auxRules, counter)
+		// If the inner rule is a wide CHOICE and we have a lift threshold,
+		// extract it into an auxiliary nonterminal to prevent the repeat
+		// helper from creating N² productions (where N = choice width).
+		preparedInner = maybeExtractWideChoice(preparedInner, parentName, st, auxRules, counter)
 		if st.binaryRepeatMode {
-			// Tree-sitter's binary repeat helper: aux → choice(seq(aux, aux), inner).
-			// Produces correct SHIFT_REPEAT / reduce conflicts in the LR tables.
 			auxName := ensureRepeatAuxBinary(parentName, preparedInner, st, auxRules, counter)
 			return Choice(Sym(auxName), Blank())
 		}
-		// Default: keep 0- and 1-item cases in parent, 2+ in helper.
 		auxName := ensureRepeatAuxLinear(parentName, preparedInner, st, auxRules, counter)
 		return Choice(Blank(), cloneRule(preparedInner), Sym(auxName))
 
 	case RuleRepeat1:
 		preparedInner := prepareRule(cloneRule(r.Children[0]), parentName, st, auxRules, counter)
+		preparedInner = maybeExtractWideChoice(preparedInner, parentName, st, auxRules, counter)
 		if st.binaryRepeatMode {
 			auxName := ensureRepeatAuxBinary(parentName, preparedInner, st, auxRules, counter)
 			return Sym(auxName)
@@ -1358,7 +1362,146 @@ func prepareRule(r *Rule, parentName string, st *symbolTable, auxRules map[strin
 	for i, c := range r.Children {
 		r.Children[i] = prepareRule(c, parentName, st, auxRules, counter)
 	}
+
+	// For SEQ nodes in grammars with ChoiceLiftThreshold: lift inline CHOICE
+	// children whose width exceeds the threshold into auxiliary nonterminals.
+	// This prevents Cartesian product explosion in production extraction.
+	// Only enabled for grammars that explicitly opt in (e.g. COBOL with 1071 rules).
+	if r.Kind == RuleSeq && st.choiceLiftThreshold > 0 {
+		r = liftLargeSeqChoices(r, parentName, st, auxRules, counter)
+	}
+
 	return r
+}
+
+// liftLargeSeqChoices lifts CHOICE children of a SEQ node into auxiliary
+// hidden nonterminals when the Cartesian product of alternatives would
+// exceed a production budget. The budget is choiceLiftThreshold^2 (e.g.
+// threshold=8 → budget=64 productions per SEQ). Choices are lifted
+// widest-first until the product is within budget.
+// maybeExtractWideChoice checks if r is a CHOICE with more children than
+// choiceLiftThreshold. If so, it extracts the CHOICE into an auxiliary
+// nonterminal and returns a symbol reference. This prevents repeat helpers
+// from creating N² productions when their body is a wide CHOICE.
+func maybeExtractWideChoice(r *Rule, parentName string, st *symbolTable, auxRules map[string]*Rule, counter *int) *Rule {
+	if st.choiceLiftThreshold <= 0 || r == nil || r.Kind != RuleChoice {
+		return r
+	}
+	if len(r.Children) <= st.choiceLiftThreshold {
+		return r
+	}
+	*counter++
+	auxName := fmt.Sprintf("_%s_choice_lift%d", parentName, *counter)
+	if _, exists := st.lookupNonterm(auxName); !exists {
+		st.addSymbol(auxName, SymbolInfo{
+			Name: auxName, Visible: false, Named: false, Kind: SymbolNonterminal,
+		})
+		auxRules[auxName] = r
+	}
+	return Sym(auxName)
+}
+
+// estimateAlternativeCount returns the number of flat alternatives that
+// enumerateAlternatives would produce for a rule.
+func estimateAlternativeCount(r *Rule) int {
+	if r == nil {
+		return 1
+	}
+	switch r.Kind {
+	case RuleChoice:
+		n := 0
+		for _, c := range r.Children {
+			n += estimateAlternativeCount(c)
+		}
+		if n == 0 {
+			return 1
+		}
+		return n
+	case RuleSeq:
+		product := 1
+		for _, c := range r.Children {
+			product *= estimateAlternativeCount(c)
+			if product > 10000 {
+				return product
+			}
+		}
+		return product
+	case RuleBlank:
+		return 1
+	case RuleField, RuleAlias, RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+		if len(r.Children) > 0 {
+			return estimateAlternativeCount(r.Children[0])
+		}
+		return 1
+	default:
+		return 1
+	}
+}
+
+// liftLargeSeqChoices examines a SEQ node and lifts CHOICE children into
+// auxiliary nonterminals when the total Cartesian product exceeds the
+// choiceLiftThreshold. Only active when st.choiceLiftThreshold > 0.
+func liftLargeSeqChoices(seq *Rule, parentName string, st *symbolTable, auxRules map[string]*Rule, counter *int) *Rule {
+	threshold := st.choiceLiftThreshold
+	if threshold <= 0 {
+		return seq
+	}
+
+	total := estimateAlternativeCount(seq)
+	if total <= threshold {
+		return seq
+	}
+
+	newChildren := make([]*Rule, len(seq.Children))
+	copy(newChildren, seq.Children)
+
+	for total > threshold {
+		// Find the widest liftable CHOICE child.
+		bestIdx := -1
+		bestAlts := 0
+		for i, c := range newChildren {
+			if c == nil {
+				continue
+			}
+			alts := estimateAlternativeCount(c)
+			if alts > bestAlts && alts >= 2 {
+				inner := c
+				for inner != nil && (inner.Kind == RuleField || inner.Kind == RuleAlias ||
+					inner.Kind == RulePrec || inner.Kind == RulePrecLeft ||
+					inner.Kind == RulePrecRight || inner.Kind == RulePrecDynamic) {
+					if len(inner.Children) > 0 {
+						inner = inner.Children[0]
+					} else {
+						break
+					}
+				}
+				if inner != nil && inner.Kind == RuleChoice {
+					bestIdx = i
+					bestAlts = alts
+				}
+			}
+		}
+		if bestIdx < 0 || bestAlts <= 1 {
+			break
+		}
+
+		*counter++
+		auxName := fmt.Sprintf("_%s_choice_lift%d", parentName, *counter)
+		if _, exists := st.lookupNonterm(auxName); !exists {
+			st.addSymbol(auxName, SymbolInfo{
+				Name: auxName, Visible: false, Named: false, Kind: SymbolNonterminal,
+			})
+			auxRules[auxName] = cloneRule(newChildren[bestIdx])
+		}
+		newChildren[bestIdx] = Sym(auxName)
+
+		newSeq := &Rule{Kind: RuleSeq, Children: newChildren}
+		total = estimateAlternativeCount(newSeq)
+	}
+
+	result := *seq
+	result.Children = newChildren
+	return &result
 }
 
 func ensureRepeatAuxLinear(parentName string, inner *Rule, st *symbolTable, auxRules map[string]*Rule, counter *int) string {
@@ -2909,6 +3052,7 @@ func expandInlineRules(g *Grammar) *Grammar {
 	out.Precedences = g.Precedences
 	out.BinaryRepeatMode = g.BinaryRepeatMode
 	out.EnableLRSplitting = g.EnableLRSplitting
+	out.ChoiceLiftThreshold = g.ChoiceLiftThreshold
 	// Don't propagate Inline — they've been expanded.
 
 	return out
