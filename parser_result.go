@@ -597,7 +597,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeScalaRecoveredObjectTemplateBodies(root, source, lang)
 		normalizeScalaSplitFunctionDefinitions(root, source, lang)
 		normalizeScalaTopLevelClassFragments(root, source, lang)
-		normalizeScalaCompilationUnitRoot(root, lang)
+		normalizeScalaCompilationUnitRoot(root, source, lang)
 		normalizeScalaDefinitionFields(root, source, lang)
 		normalizeScalaTemplateBodyFunctionAnnotations(root, source, lang)
 		normalizeScalaImportPathFields(root, lang)
@@ -2416,25 +2416,27 @@ func normalizeGoCompatibilityInRanges(root *Node, source []byte, lang *Language,
 				if tail == nil {
 					continue
 				}
-				if tail.endByte < curr.endByte &&
-					int(curr.endByte) <= len(source) &&
-					bytesAreTrivia(source[tail.endByte:curr.endByte]) {
-					target := goTrailingNewlineBoundary(tail.endByte, curr.endByte, source)
-					if target > tail.endByte {
-						extendNodeEndTo(tail, target, source)
-					}
-				}
-				if curr.endByte >= next.startByte || int(next.startByte) > len(source) {
+				if int(next.startByte) > len(source) {
 					continue
 				}
-				target := goTrailingNewlineBoundary(curr.endByte, next.startByte, source)
-				if target > curr.endByte {
-					extendNodeEndTo(curr, target, source)
-					if tail != nil &&
-						tail.endByte < target &&
-						bytesAreTrivia(source[tail.endByte:target]) {
-						extendNodeEndTo(tail, target, source)
+				target, hasNewline := goTrailingTriviaBoundaryBefore(next.startByte, source)
+				if hasNewline {
+					if curr.endByte != target {
+						setNodeEndTo(curr, target, source)
 					}
+					switch {
+					case tail.endByte > target:
+						setNodeEndTo(tail, target, source)
+					case tail.endByte < target && bytesAreTrivia(source[tail.endByte:target]):
+						setNodeEndTo(tail, target, source)
+					}
+					continue
+				}
+				if curr.endByte > next.startByte {
+					setNodeEndTo(curr, next.startByte, source)
+				}
+				if tail.endByte > next.startByte {
+					setNodeEndTo(tail, next.startByte, source)
 				}
 			}
 		}
@@ -2574,6 +2576,27 @@ func goTrailingNewlineBoundary(start, end uint32, source []byte) uint32 {
 		return start + uint32(newline+1)
 	}
 	return start
+}
+
+func goTrailingTriviaBoundaryBefore(end uint32, source []byte) (uint32, bool) {
+	if end == 0 || int(end) > len(source) {
+		return end, false
+	}
+	start := int(end)
+	for start > 0 {
+		switch source[start-1] {
+		case ' ', '\t', '\r', '\n':
+			start--
+		default:
+			goto gapReady
+		}
+	}
+gapReady:
+	gap := source[start:int(end)]
+	if newline := bytes.LastIndexByte(gap, '\n'); newline >= 0 {
+		return uint32(start + newline + 1), true
+	}
+	return end, false
 }
 
 func goTrailingCaseStatementList(n *Node, statementListSym, statementListRepeatSym Symbol) *Node {
@@ -7930,8 +7953,11 @@ type scalaTemplateMemberKind uint8
 
 const (
 	scalaTemplateMemberUnknown scalaTemplateMemberKind = iota
+	scalaTemplateMemberPackage
 	scalaTemplateMemberClass
 	scalaTemplateMemberObject
+	scalaTemplateMemberTrait
+	scalaTemplateMemberEnum
 	scalaTemplateMemberFunction
 	scalaTemplateMemberImport
 	scalaTemplateMemberVal
@@ -9764,12 +9790,33 @@ func scalaRecoverTopLevelFunctionNodeFromRange(source []byte, fnStart, fnEnd uin
 	return nil, false
 }
 
-func normalizeScalaCompilationUnitRoot(root *Node, lang *Language) {
+func normalizeScalaCompilationUnitRoot(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "scala" || root.Type(lang) != "ERROR" {
 		return
 	}
 	sym, ok := symbolByName(lang, "compilation_unit")
-	if !ok || !rootLooksLikeScalaCompilationUnit(root, lang) {
+	if !ok {
+		return
+	}
+	if children, ok := scalaRebuildCompilationUnitChildren(source, lang, root.ownerArena); ok {
+		root.children = children
+		root.fieldIDs = nil
+		root.fieldSources = nil
+		root.symbol = sym
+		root.isNamed = int(sym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[sym].Named
+		populateParentNode(root, root.children)
+		root.hasError = false
+		for _, child := range root.children {
+			if child != nil && (child.IsError() || child.HasError()) {
+				root.hasError = true
+				break
+			}
+		}
+		if !root.hasError {
+			return
+		}
+	}
+	if !rootLooksLikeScalaCompilationUnit(root, lang) {
 		return
 	}
 	root.symbol = sym
@@ -9780,6 +9827,279 @@ func normalizeScalaCompilationUnitRoot(root *Node, lang *Language) {
 			root.hasError = true
 			break
 		}
+	}
+}
+
+func scalaRebuildCompilationUnitChildren(source []byte, lang *Language, arena *nodeArena) ([]*Node, bool) {
+	if lang == nil || len(source) == 0 {
+		return nil, false
+	}
+	spans := scalaCompilationUnitSpans(source)
+	if len(spans) == 0 {
+		return nil, false
+	}
+	sawPackageOrImport := false
+	sawDefinition := false
+	for _, span := range spans {
+		switch span.kind {
+		case scalaTemplateMemberPackage, scalaTemplateMemberImport:
+			sawPackageOrImport = true
+		case scalaTemplateMemberClass, scalaTemplateMemberObject, scalaTemplateMemberTrait, scalaTemplateMemberEnum:
+			sawDefinition = true
+		}
+	}
+	if !sawPackageOrImport || !sawDefinition {
+		return nil, false
+	}
+	children := make([]*Node, 0, len(spans))
+	for _, span := range spans {
+		node, ok := scalaRecoverCompilationUnitMemberNode(source, span, lang, arena)
+		if !ok || node == nil {
+			switch span.kind {
+			case scalaTemplateMemberComment, scalaTemplateMemberBlockComment:
+				continue
+			default:
+				return nil, false
+			}
+		}
+		children = append(children, node)
+	}
+	if len(children) == 0 {
+		return nil, false
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	return children, true
+}
+
+func scalaCompilationUnitSpans(source []byte) []scalaTemplateMemberSpan {
+	var spans []scalaTemplateMemberSpan
+	pos := 0
+	limit := len(source)
+	for pos < limit {
+		start, kind, ok := scalaFindNextCompilationUnitMemberStart(source, pos, limit)
+		if !ok {
+			break
+		}
+		end := scalaFindCompilationUnitMemberEnd(source, start, limit, kind)
+		if end <= start {
+			pos = start + 1
+			continue
+		}
+		spans = append(spans, scalaTemplateMemberSpan{
+			start: uint32(start),
+			end:   uint32(end),
+			kind:  kind,
+		})
+		pos = end
+	}
+	return spans
+}
+
+func scalaFindNextCompilationUnitMemberStart(source []byte, pos, limit int) (int, scalaTemplateMemberKind, bool) {
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inLineComment := false
+	inBlockComment := false
+	var stringQuote byte
+	tripleQuote := false
+	lineStart := true
+	for i := pos; i < limit; i++ {
+		ch := source[i]
+		next := byte(0)
+		if i+1 < limit {
+			next = source[i+1]
+		}
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+				lineStart = true
+			}
+			continue
+		}
+		if inBlockComment {
+			if ch == '*' && next == '/' {
+				inBlockComment = false
+				i++
+				continue
+			}
+			if ch == '\n' {
+				lineStart = true
+			}
+			continue
+		}
+		if stringQuote != 0 {
+			if tripleQuote {
+				if i+2 < limit && source[i] == stringQuote && source[i+1] == stringQuote && source[i+2] == stringQuote {
+					stringQuote = 0
+					tripleQuote = false
+					i += 2
+				}
+				continue
+			}
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == stringQuote {
+				stringQuote = 0
+			}
+			continue
+		}
+		if lineStart {
+			j := skipHorizontalTrivia(source, i, limit)
+			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				switch {
+				case j+1 < limit && source[j] == '/' && source[j+1] == '/':
+					return j, scalaTemplateMemberComment, true
+				case j+1 < limit && source[j] == '/' && source[j+1] == '*':
+					return j, scalaTemplateMemberBlockComment, true
+				default:
+					if kind, ok := scalaCompilationUnitKindAt(source, j, limit); ok {
+						return j, kind, true
+					}
+				}
+			}
+			lineStart = false
+		}
+		switch {
+		case ch == '/' && next == '/':
+			inLineComment = true
+			i++
+			continue
+		case ch == '/' && next == '*':
+			inBlockComment = true
+			i++
+			continue
+		case ch == '"' || ch == '\'':
+			if i+2 < limit && source[i+1] == ch && source[i+2] == ch {
+				stringQuote = ch
+				tripleQuote = true
+				i += 2
+				continue
+			}
+			stringQuote = ch
+			tripleQuote = false
+			continue
+		case ch == '{':
+			braceDepth++
+		case ch == '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case ch == '(':
+			parenDepth++
+		case ch == ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case ch == '[':
+			bracketDepth++
+		case ch == ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		}
+		if ch == '\n' {
+			lineStart = true
+		}
+	}
+	return 0, scalaTemplateMemberUnknown, false
+}
+
+func scalaCompilationUnitKindAt(source []byte, pos, limit int) (scalaTemplateMemberKind, bool) {
+	if pos >= limit {
+		return scalaTemplateMemberUnknown, false
+	}
+	switch {
+	case bytes.HasPrefix(source[pos:limit], []byte("package ")):
+		return scalaTemplateMemberPackage, true
+	case bytes.HasPrefix(source[pos:limit], []byte("import ")):
+		return scalaTemplateMemberImport, true
+	case bytes.HasPrefix(source[pos:limit], []byte("final class ")):
+		return scalaTemplateMemberClass, true
+	case bytes.HasPrefix(source[pos:limit], []byte("implicit class ")):
+		return scalaTemplateMemberClass, true
+	case bytes.HasPrefix(source[pos:limit], []byte("class ")):
+		return scalaTemplateMemberClass, true
+	case bytes.HasPrefix(source[pos:limit], []byte("object ")):
+		return scalaTemplateMemberObject, true
+	case bytes.HasPrefix(source[pos:limit], []byte("trait ")):
+		return scalaTemplateMemberTrait, true
+	case bytes.HasPrefix(source[pos:limit], []byte("enum ")):
+		return scalaTemplateMemberEnum, true
+	default:
+		return scalaTemplateMemberUnknown, false
+	}
+}
+
+func scalaFindCompilationUnitMemberEnd(source []byte, start, limit int, kind scalaTemplateMemberKind) int {
+	switch kind {
+	case scalaTemplateMemberComment:
+		end := start
+		for end < limit && source[end] != '\n' && source[end] != '\r' {
+			end++
+		}
+		return trimTrailingHorizontalAndVerticalTrivia(source, start, end)
+	case scalaTemplateMemberBlockComment:
+		end := start + 2
+		for end+1 < limit {
+			if source[end] == '*' && source[end+1] == '/' {
+				end += 2
+				return trimTrailingHorizontalAndVerticalTrivia(source, start, end)
+			}
+			end++
+		}
+		return trimTrailingHorizontalAndVerticalTrivia(source, start, limit)
+	case scalaTemplateMemberPackage, scalaTemplateMemberImport:
+		end := start
+		for end < limit && source[end] != '\n' && source[end] != '\r' {
+			end++
+		}
+		return trimTrailingHorizontalAndVerticalTrivia(source, start, end)
+	case scalaTemplateMemberObject, scalaTemplateMemberClass, scalaTemplateMemberTrait, scalaTemplateMemberEnum:
+		openRel := bytes.IndexByte(source[start:limit], '{')
+		if openRel < 0 {
+			end := start
+			for end < limit && source[end] != '\n' && source[end] != '\r' {
+				end++
+			}
+			return trimTrailingHorizontalAndVerticalTrivia(source, start, end)
+		}
+		openPos := start + openRel
+		if closePos := scalaFindMatchingBraceByteWithTrivia(source, openPos, uint32(limit)); closePos >= 0 {
+			return closePos + 1
+		}
+		return trimTrailingHorizontalAndVerticalTrivia(source, start, limit)
+	default:
+		return 0
+	}
+}
+
+func scalaRecoverCompilationUnitMemberNode(source []byte, span scalaTemplateMemberSpan, lang *Language, arena *nodeArena) (*Node, bool) {
+	switch span.kind {
+	case scalaTemplateMemberPackage:
+		return scalaRecoverTopLevelNamedNodeFromRange(source, span.start, span.end, lang, arena, "package_clause")
+	case scalaTemplateMemberImport:
+		return scalaRecoverTopLevelNamedNodeFromRange(source, span.start, span.end, lang, arena, "import_declaration")
+	case scalaTemplateMemberObject:
+		return scalaRecoverTopLevelObjectNodeFromRange(source, span.start, span.end, lang, arena)
+	case scalaTemplateMemberClass:
+		return scalaRecoverTopLevelClassNodeFromRange(source, span.start, span.end, lang, arena)
+	case scalaTemplateMemberTrait:
+		return scalaRecoverTopLevelNamedNodeFromRange(source, span.start, span.end, lang, arena, "trait_definition")
+	case scalaTemplateMemberEnum:
+		return scalaRecoverTopLevelNamedNodeFromRange(source, span.start, span.end, lang, arena, "enum_definition")
+	case scalaTemplateMemberComment:
+		return scalaRecoverTopLevelNamedNodeFromRange(source, span.start, span.end, lang, arena, "comment")
+	case scalaTemplateMemberBlockComment:
+		return scalaRecoverTopLevelNamedNodeFromRange(source, span.start, span.end, lang, arena, "block_comment")
+	default:
+		return nil, false
 	}
 }
 
@@ -10488,6 +10808,18 @@ func extendNodeEndTo(n *Node, end uint32, source []byte) {
 	gap := source[n.endByte:end]
 	n.endByte = end
 	n.endPoint = advancePointByBytes(n.endPoint, gap)
+}
+
+func setNodeEndTo(n *Node, end uint32, source []byte) {
+	if n == nil || end > uint32(len(source)) || end < n.startByte || end == n.endByte {
+		return
+	}
+	if end > n.endByte {
+		extendNodeEndTo(n, end, source)
+		return
+	}
+	n.endByte = end
+	n.endPoint = advancePointByBytes(Point{}, source[:end])
 }
 
 func advancePointByBytes(start Point, b []byte) Point {
