@@ -3,6 +3,7 @@ package grammargen
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -91,6 +92,10 @@ func buildFollowTokensFunc(tables *LRTables, tokenCount int) func(int) []int {
 		cache[state] = result
 		return result
 	}
+}
+
+func useForcedBroadLexFallback() bool {
+	return os.Getenv("GTS_GRAMMARGEN_FORCE_BROAD_LEX") == "1"
 }
 
 // ConflictKind describes the type of LR conflict.
@@ -580,12 +585,10 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 	var lexModes []lexModeSpec
 	var stateToMode []int
 	var afterWSModes []afterWSModeEntry
-	if tables.StateCount > 50000 {
-		// Large grammars (C# 121K states, TS 42K): use a single broad
-		// DFA with all tokens instead of per-state lex modes. Per-state
-		// mode computation is O(states × tokens) which is prohibitive
-		// for these grammars. The broad DFA loses context-dependent
-		// lexing but makes generation complete in minutes.
+	if useForcedBroadLexFallback() {
+		// Escape hatch only. The broad DFA is much faster to build for huge
+		// grammars, but it is not parser-correct for languages that rely on
+		// stateful contextual lexing such as C# and COBOL.
 		allSyms := make(map[int]bool)
 		for _, t := range ng.Terminals {
 			allSyms[t.SymbolID] = true
@@ -803,12 +806,10 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 	var lexModes []lexModeSpec
 	var stateToMode []int
 	var afterWSModes []afterWSModeEntry
-	if tables.StateCount > 50000 {
-		// Large grammars (C# 121K states, TS 42K): use a single broad
-		// DFA with all tokens instead of per-state lex modes. Per-state
-		// mode computation is O(states × tokens) which is prohibitive
-		// for these grammars. The broad DFA loses context-dependent
-		// lexing but makes generation complete in minutes.
+	if useForcedBroadLexFallback() {
+		// Escape hatch only. The broad DFA is much faster to build for huge
+		// grammars, but it is not parser-correct for languages that rely on
+		// stateful contextual lexing such as C# and COBOL.
 		allSyms := make(map[int]bool)
 		for _, t := range ng.Terminals {
 			allSyms[t.SymbolID] = true
