@@ -438,6 +438,10 @@ bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode real-corpus --lan
 bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode cgo --langs typescript
 ```
 
+`run_grammargen_focus_targets.sh` is the safest local lane for high-value
+grammars: it runs one grammar per container and defaults to a single-worker
+profile (`--cpus 1`, `--pids 512`, `GOMAXPROCS=1`, `GOFLAGS=-p=1`).
+
 If you only need a fast package-local regression check, keep it in Docker and
 narrow the `-run` regex:
 

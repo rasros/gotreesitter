@@ -9,6 +9,10 @@ CGO_RUNNER="$SCRIPT_DIR/run_grammargen_c_parity.sh"
 MODE="all"
 LANGS_CSV="javascript,typescript,tsx,c,cpp,c_sharp,cobol,fortran"
 MEMORY_LIMIT="8g"
+CPUS_LIMIT="1"
+PIDS_LIMIT="512"
+GOMAXPROCS_VALUE="1"
+GOFLAGS_VALUE="-p=1"
 REAL_TIMEOUT="15m"
 REAL_MAX_CASES="25"
 REAL_PROFILE="aggressive"
@@ -37,6 +41,10 @@ Options:
   --mode <m>             all|real-corpus|cgo (default: all)
   --langs <list>         Comma-separated subset of target languages
   --memory <limit>       Docker memory limit for both paths (default: 8g)
+  --cpus <count>         Docker CPU limit for both paths (default: 1)
+  --pids <count>         Docker PID limit for both paths (default: 512)
+  --gomaxprocs <n>       Export GOMAXPROCS inside both containers (default: 1)
+  --goflags <value>      Export GOFLAGS inside both containers (default: -p=1)
   --real-timeout <dur>   Real-corpus timeout per grammar (default: 15m)
   --real-max-cases <n>   Real-corpus max cases per grammar (default: 25)
   --profile <name>       smoke|balanced|aggressive (default: aggressive)
@@ -54,6 +62,8 @@ Options:
 Notes:
   - Real-corpus parity runs one grammar per container via run_single_grammar_parity.sh.
   - Direct C parity also runs one language per container via run_grammargen_c_parity.sh.
+  - The default lane is single-worker by design: one grammar, one container,
+    cpus=1, GOMAXPROCS=1, GOFLAGS=-p=1.
   - fortran is currently real-corpus-only; the direct grammargen-vs-C harness
     does not expose it yet.
 EOF
@@ -99,6 +109,10 @@ while [[ $# -gt 0 ]]; do
     --mode) MODE="$2"; shift 2 ;;
     --langs) LANGS_CSV="$2"; shift 2 ;;
     --memory) MEMORY_LIMIT="$2"; shift 2 ;;
+    --cpus) CPUS_LIMIT="$2"; shift 2 ;;
+    --pids) PIDS_LIMIT="$2"; shift 2 ;;
+    --gomaxprocs) GOMAXPROCS_VALUE="$2"; shift 2 ;;
+    --goflags) GOFLAGS_VALUE="$2"; shift 2 ;;
     --real-timeout) REAL_TIMEOUT="$2"; shift 2 ;;
     --real-max-cases) REAL_MAX_CASES="$2"; shift 2 ;;
     --profile) REAL_PROFILE="$2"; shift 2 ;;
@@ -209,11 +223,19 @@ run_real_corpus_lang() {
 
   local -a args=(
     --memory "$MEMORY_LIMIT"
+    --cpus "$CPUS_LIMIT"
+    --pids "$PIDS_LIMIT"
     --timeout "$REAL_TIMEOUT"
     --max-cases "$REAL_MAX_CASES"
     --profile "$REAL_PROFILE"
     --report-dir "$REAL_REPORT_DIR"
   )
+  if [[ -n "$GOMAXPROCS_VALUE" ]]; then
+    args+=(--gomaxprocs "$GOMAXPROCS_VALUE")
+  fi
+  if [[ -n "$GOFLAGS_VALUE" ]]; then
+    args+=(--goflags "$GOFLAGS_VALUE")
+  fi
   if [[ -n "$SEED_DIR" ]]; then
     args+=(--seed-dir "$SEED_DIR")
   fi
@@ -271,6 +293,8 @@ run_cgo_lang() {
 
   local -a args=(
     --memory "$MEMORY_LIMIT"
+    --cpus "$CPUS_LIMIT"
+    --pids "$PIDS_LIMIT"
     --max-cases "$CGO_MAX_CASES"
     --max-bytes "$CGO_MAX_BYTES"
     --langs "$lang"
@@ -278,6 +302,12 @@ run_cgo_lang() {
     --label "focus-${lang}"
     --src-dir "$REPO_ROOT"
   )
+  if [[ -n "$GOMAXPROCS_VALUE" ]]; then
+    args+=(--gomaxprocs "$GOMAXPROCS_VALUE")
+  fi
+  if [[ -n "$GOFLAGS_VALUE" ]]; then
+    args+=(--goflags "$GOFLAGS_VALUE")
+  fi
   if [[ -n "$SEED_DIR" ]]; then
     args+=(--seed-dir "$SEED_DIR")
   fi
@@ -307,7 +337,7 @@ run_cgo_lang() {
 }
 
 echo "Focused grammargen targets: ${TARGET_LANGS[*]}"
-echo "mode=$MODE memory=$MEMORY_LIMIT offline=$OFFLINE lr_split=$LR_SPLIT"
+echo "mode=$MODE memory=$MEMORY_LIMIT cpus=$CPUS_LIMIT pids=$PIDS_LIMIT gomaxprocs=${GOMAXPROCS_VALUE:-inherit} goflags=${GOFLAGS_VALUE:-inherit} offline=$OFFLINE lr_split=$LR_SPLIT"
 echo ""
 
 if [[ "$MODE" == "all" || "$MODE" == "real-corpus" ]]; then
