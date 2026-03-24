@@ -5219,6 +5219,8 @@ func normalizeTypeScriptCompatibility(root *Node, source []byte, lang *Language)
 		if n == nil {
 			return
 		}
+		normalizeTypeScriptIdentifierKeywordAliases(n, &ctx)
+		normalizeTypeScriptImportKeywordNamedness(n, &ctx)
 		if ctx.canClearEnumBodyFields && n.symbol == ctx.enumBodySym && len(n.fieldIDs) > 0 {
 			limit := len(n.children)
 			if len(n.fieldIDs) < limit {
@@ -5260,6 +5262,29 @@ func normalizeTypeScriptCompatibility(root *Node, source []byte, lang *Language)
 		}
 	}
 	walk(root)
+}
+
+func normalizeTypeScriptIdentifierKeywordAliases(node *Node, ctx *typeScriptNormalizationContext) {
+	if node == nil || ctx == nil || ctx.lang == nil || node.symbol != ctx.identifierSym || len(node.children) != 1 {
+		return
+	}
+	child := node.children[0]
+	if child == nil || child.IsNamed() || child.IsExtra() {
+		return
+	}
+	if child.startByte != node.startByte || child.endByte != node.endByte || child.startPoint != node.startPoint || child.endPoint != node.endPoint {
+		return
+	}
+	node.children = nil
+	node.fieldIDs = nil
+	node.fieldSources = nil
+}
+
+func normalizeTypeScriptImportKeywordNamedness(node *Node, ctx *typeScriptNormalizationContext) {
+	if node == nil || ctx == nil || ctx.lang == nil || node.Type(ctx.lang) != "import" {
+		return
+	}
+	node.isNamed = false
 }
 
 func normalizeTypeScriptRecoveredNamespaceRoot(root *Node, source []byte, lang *Language) {

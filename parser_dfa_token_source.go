@@ -558,6 +558,100 @@ func (d *dfaTokenSource) nextNonSpaceByte(pos int) byte {
 	return 0
 }
 
+func (d *dfaTokenSource) nextNonSpacePos(pos int) int {
+	if d == nil || d.lexer == nil {
+		return -1
+	}
+	for pos < len(d.lexer.source) {
+		switch d.lexer.source[pos] {
+		case ' ', '\t', '\n', '\r':
+			pos++
+			continue
+		default:
+			return pos
+		}
+	}
+	return len(d.lexer.source)
+}
+
+func (d *dfaTokenSource) scanBalancedTypeScriptKeywordSuffix(openPos int, open, close byte) (int, bool) {
+	if d == nil || d.lexer == nil || openPos < 0 || openPos >= len(d.lexer.source) || d.lexer.source[openPos] != open {
+		return -1, false
+	}
+	depth := 0
+	for i := openPos; i < len(d.lexer.source); i++ {
+		switch d.lexer.source[i] {
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return -1, false
+}
+
+func (d *dfaTokenSource) shouldPreferJavaScriptTypeScriptContextualIdentifier(tok, kwTok Token, kwHasAction, idHasAction bool) bool {
+	if d == nil || d.language == nil || d.lexer == nil || !idHasAction || !kwHasAction {
+		return false
+	}
+	switch d.language.Name {
+	case "javascript", "typescript", "tsx":
+	default:
+		return false
+	}
+	if int(kwTok.Symbol) >= len(d.language.SymbolNames) {
+		return false
+	}
+	switch d.language.SymbolNames[kwTok.Symbol] {
+	case "get", "set":
+	default:
+		return false
+	}
+	nextPos := d.nextNonSpacePos(int(tok.EndByte))
+	if nextPos < 0 || nextPos >= len(d.lexer.source) {
+		return false
+	}
+	switch d.lexer.source[nextPos] {
+	case '.', '(':
+		return true
+	case '[':
+		afterBracket, ok := d.scanBalancedTypeScriptKeywordSuffix(nextPos, '[', ']')
+		if !ok {
+			return false
+		}
+		afterBracket = d.nextNonSpacePos(afterBracket)
+		if afterBracket < 0 || afterBracket >= len(d.lexer.source) {
+			return true
+		}
+		switch d.lexer.source[afterBracket] {
+		case '.', '[', '}', ',', ';', ':', '?':
+			return true
+		case '(':
+			afterCall, ok := d.scanBalancedTypeScriptKeywordSuffix(afterBracket, '(', ')')
+			if !ok {
+				return true
+			}
+			afterCall = d.nextNonSpacePos(afterCall)
+			if afterCall < 0 || afterCall >= len(d.lexer.source) {
+				return true
+			}
+			switch d.lexer.source[afterCall] {
+			case '{', ';':
+				return false
+			default:
+				return true
+			}
+		default:
+			return true
+		}
+	default:
+		return false
+	}
+}
+
 func isTypeScriptIdentifierStartByte(ch byte) bool {
 	return ch == '_' || ch == '$' ||
 		(ch >= 'a' && ch <= 'z') ||
@@ -1729,6 +1823,9 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		}
 		if !kwHasAction && idHasAction {
 			return tok // no active stack needs the keyword
+		}
+		if d.shouldPreferJavaScriptTypeScriptContextualIdentifier(tok, kwTok, kwHasAction, idHasAction) {
+			return tok
 		}
 	}
 

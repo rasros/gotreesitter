@@ -34,6 +34,18 @@ func TestTypeScriptCorpusSnippetParity(t *testing.T) {
 			src:  "a.b<[C]>();\na<C.D[]>();\n",
 		},
 		{
+			name: "import_alias_assignment",
+			src:  "import r = X.N;\n",
+		},
+		{
+			name: "module_identifier_expression_statement",
+			src:  "var module;\nmodule;\n",
+		},
+		{
+			name: "async_arrow_identifier",
+			src:  "const x = async => async;\n",
+		},
+		{
 			name: "unary_call_precedence",
 			src:  "!isNodeKind(kind)\n",
 		},
@@ -89,6 +101,14 @@ func TestTypeScriptCorpusSnippetParity(t *testing.T) {
 			name: "commented_logical_or_call_chain",
 			src:  "identifier || // import id\n                token() === SyntaxKind.AsteriskToken || // import *\n                token() === SyntaxKind.OpenBraceToken\n",
 		},
+		{
+			name: "if_statement_set_computed_subscript",
+			src:  "if ( foo ) {\n\tset[ 1 ]\n}\n",
+		},
+		{
+			name: "if_statement_set_computed_member_call",
+			src:  "if ( foo ) {\n\tset[ 1 ].apply()\n}\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -121,8 +141,28 @@ func TestTSXCorpusSnippetParity(t *testing.T) {
 			src:  "a.b<[C]>();\na<C.D[]>();\n",
 		},
 		{
+			name: "import_alias_assignment",
+			src:  "import r = X.N;\n",
+		},
+		{
+			name: "module_identifier_expression_statement",
+			src:  "var module;\nmodule;\n",
+		},
+		{
+			name: "async_arrow_identifier",
+			src:  "const x = async => async;\n",
+		},
+		{
 			name: "jsx_generic_ambiguity_from_functions_corpus",
 			src:  "<A>(amount, interestRate, duration): number => 2\n\nfunction* foo<A>(amount, interestRate, duration): number {\n\tyield amount * interestRate * duration / 12\n}\n\n(module: any): number => 2\n",
+		},
+		{
+			name: "if_statement_set_computed_subscript",
+			src:  "if ( foo ) {\n\tset[ 1 ]\n}\n",
+		},
+		{
+			name: "if_statement_set_computed_member_call",
+			src:  "if ( foo ) {\n\tset[ 1 ].apply()\n}\n",
 		},
 	}
 
@@ -131,6 +171,40 @@ func TestTSXCorpusSnippetParity(t *testing.T) {
 			assertGeneratedAndReferenceParity(t, genLang, refLang, tt.src)
 		})
 	}
+}
+
+func TestTypeScriptDirectCRegressionDeepParity(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skip heavyweight TypeScript parity generation under -race; non-race coverage keeps the generated-vs-reference check")
+	}
+
+	assertImportedDeepParityCases(t, "typescript", []struct {
+		name string
+		src  string
+	}{
+		{name: "import_alias_assignment", src: "import r = X.N;\n"},
+		{name: "module_identifier_expression_statement", src: "var module;\nmodule;\n"},
+		{name: "async_arrow_identifier", src: "const x = async => async;\n"},
+		{name: "if_statement_set_computed_subscript", src: "if ( foo ) {\n\tset[ 1 ]\n}\n"},
+		{name: "if_statement_set_computed_member_call", src: "if ( foo ) {\n\tset[ 1 ].apply()\n}\n"},
+	})
+}
+
+func TestTSXDirectCRegressionDeepParity(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skip heavyweight TypeScript parity generation under -race; non-race coverage keeps the generated-vs-reference check")
+	}
+
+	assertImportedDeepParityCases(t, "tsx", []struct {
+		name string
+		src  string
+	}{
+		{name: "import_alias_assignment", src: "import r = X.N;\n"},
+		{name: "module_identifier_expression_statement", src: "var module;\nmodule;\n"},
+		{name: "async_arrow_identifier", src: "const x = async => async;\n"},
+		{name: "if_statement_set_computed_subscript", src: "if ( foo ) {\n\tset[ 1 ]\n}\n"},
+		{name: "if_statement_set_computed_member_call", src: "if ( foo ) {\n\tset[ 1 ].apply()\n}\n"},
+	})
 }
 
 func loadImportedParityLanguages(t *testing.T, grammarName string) (*gotreesitter.Language, *gotreesitter.Language) {
@@ -211,6 +285,43 @@ func assertGeneratedAndReferenceParity(t *testing.T, genLang, refLang *gotreesit
 			return
 		}
 		t.Fatalf("sexpr mismatch\nGEN: %s\nREF: %s\nDIVS: %v", genSExpr, refSExpr, divs)
+	}
+}
+
+func assertImportedDeepParityCases(t *testing.T, grammarName string, cases []struct {
+	name string
+	src  string
+}) {
+	t.Helper()
+	genLang, refLang := loadImportedParityLanguages(t, grammarName)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertGeneratedAndReferenceDeepParity(t, genLang, refLang, tc.src)
+		})
+	}
+}
+
+func assertGeneratedAndReferenceDeepParity(t *testing.T, genLang, refLang *gotreesitter.Language, src string) {
+	t.Helper()
+
+	data := []byte(src)
+	genTree, err := gotreesitter.NewParser(genLang).Parse(data)
+	if err != nil {
+		t.Fatalf("generated parse: %v", err)
+	}
+	refTree, err := gotreesitter.NewParser(refLang).Parse(data)
+	if err != nil {
+		t.Fatalf("reference parse: %v", err)
+	}
+
+	genRoot := genTree.RootNode()
+	refRoot := refTree.RootNode()
+	if genRoot.HasError() != refRoot.HasError() {
+		t.Fatalf("error mismatch: gen=%v ref=%v\nGEN: %s\nREF: %s", genRoot.HasError(), refRoot.HasError(), safeSExpr(genRoot, genLang, 256), safeSExpr(refRoot, refLang, 256))
+	}
+	divs := compareTreesDeep(genRoot, genLang, refRoot, refLang, "root", 10)
+	if len(divs) > 0 {
+		t.Fatalf("deep mismatch\nGEN: %s\nREF: %s\nDIVS: %v", safeSExpr(genRoot, genLang, 256), safeSExpr(refRoot, refLang, 256), divs)
 	}
 }
 
