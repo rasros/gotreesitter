@@ -569,6 +569,31 @@ func TestTypeScriptAsIntersectionObjectTypeStillBuildsTypeSide(t *testing.T) {
 	}
 }
 
+func TestTypeScriptCommentedLogicalOrCallChainStillKeepsBinaryExpression(t *testing.T) {
+	const src = "identifier || // import id\n                token() === SyntaxKind.AsteriskToken || // import *\n                token() === SyntaxKind.OpenBraceToken\n"
+	tree, lang := parseByLanguageName(t, "typescript", src)
+	root := tree.RootNode()
+	if root.HasError() {
+		t.Fatalf("unexpected typescript parse error: %s", root.SExpr(lang))
+	}
+	binary := firstNode(root, func(n *gotreesitter.Node) bool {
+		return n.Type(lang) == "binary_expression" && n.Text([]byte(src)) == "identifier || // import id\n                token() === SyntaxKind.AsteriskToken || // import *\n                token() === SyntaxKind.OpenBraceToken"
+	})
+	if binary == nil {
+		t.Fatalf("missing binary_expression for commented logical-or call chain: %s", root.SExpr(lang))
+	}
+	if got := countNodes(binary, func(n *gotreesitter.Node) bool {
+		return n.Type(lang) == "call_expression" && n.Text([]byte(src)) == "token()"
+	}); got < 2 {
+		t.Fatalf("commented logical-or call count = %d, want at least 2: %s", got, binary.SExpr(lang))
+	}
+	if bad := firstNode(root, func(n *gotreesitter.Node) bool {
+		return n.Type(lang) == "call_expression" && n.Text([]byte(src)) == "identifier || // import id\n                token() === SyntaxKind.AsteriskToken || // import *\n                token() === SyntaxKind.OpenBraceToken"
+	}); bad != nil {
+		t.Fatalf("commented logical-or chain still parsed as call_expression: %s", bad.SExpr(lang))
+	}
+}
+
 func firstNode(root *gotreesitter.Node, pred func(*gotreesitter.Node) bool) *gotreesitter.Node {
 	if root == nil {
 		return nil

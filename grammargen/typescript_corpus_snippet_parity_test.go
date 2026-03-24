@@ -85,6 +85,10 @@ func TestTypeScriptCorpusSnippetParity(t *testing.T) {
 			name: "as_intersection_object_type",
 			src:  "createNode(SyntaxKind.ExpressionWithTypeArguments) as ExpressionWithTypeArguments & { expression: Identifier | PropertyAccessEntityNameExpression }\n",
 		},
+		{
+			name: "commented_logical_or_call_chain",
+			src:  "identifier || // import id\n                token() === SyntaxKind.AsteriskToken || // import *\n                token() === SyntaxKind.OpenBraceToken\n",
+		},
 	}
 
 	for _, tt := range tests {

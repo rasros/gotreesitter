@@ -4910,22 +4910,64 @@ func rewriteJavaScriptTypeScriptCallTarget(target, arguments, callNode *Node, la
 		populateParentNode(rewrittenUnary, rewrittenUnary.children)
 		return rewrittenUnary
 	case "binary_expression":
-		if len(target.children) != 3 {
+		operator, rightIdx, ok := javaScriptTypeScriptBinaryOperatorAndRight(target, lang)
+		if !ok || rightIdx < 0 || rightIdx >= len(target.children) {
 			return nil
 		}
-		rewrittenRight := rewriteJavaScriptTypeScriptCallTarget(target.children[2], arguments, callNode, lang)
+		if operator == nil {
+			return nil
+		}
+		if _, ok := javaScriptTypeScriptBinaryOperatorPrecedence(operator.Type(lang)); !ok {
+			return nil
+		}
+		rewrittenRight := rewriteJavaScriptTypeScriptCallTarget(target.children[rightIdx], arguments, callNode, lang)
 		if rewrittenRight == nil {
 			return nil
 		}
 		rewrittenBinary := cloneNodeInArena(callNode.ownerArena, target)
 		binaryChildren := cloneNodeSliceInArena(callNode.ownerArena, target.children)
-		binaryChildren[2] = rewrittenRight
+		binaryChildren[rightIdx] = rewrittenRight
 		rewrittenBinary.children = binaryChildren
 		populateParentNode(rewrittenBinary, rewrittenBinary.children)
 		return rewrittenBinary
 	default:
 		return nil
 	}
+}
+
+func javaScriptTypeScriptBinaryOperatorAndRight(node *Node, lang *Language) (*Node, int, bool) {
+	if node == nil || lang == nil || node.Type(lang) != "binary_expression" || len(node.children) < 3 {
+		return nil, -1, false
+	}
+	operatorIdx := -1
+	rightIdx := -1
+	for i := 0; i < len(node.children); i++ {
+		switch node.FieldNameForChild(i, lang) {
+		case "operator":
+			operatorIdx = i
+		case "right":
+			rightIdx = i
+		}
+	}
+	if operatorIdx < 0 && len(node.children) >= 2 {
+		operatorIdx = 1
+	}
+	if rightIdx < 0 {
+		for i := len(node.children) - 1; i >= 0; i-- {
+			child := node.children[i]
+			if child == nil || child.isExtra {
+				continue
+			}
+			if i != operatorIdx {
+				rightIdx = i
+				break
+			}
+		}
+	}
+	if operatorIdx < 0 || rightIdx < 0 || operatorIdx >= len(node.children) {
+		return nil, -1, false
+	}
+	return node.children[operatorIdx], rightIdx, true
 }
 
 func isJavaScriptTypeScriptCallableShape(node *Node, lang *Language) bool {
