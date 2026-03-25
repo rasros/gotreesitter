@@ -512,6 +512,8 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeCVariadicParameterEllipsis(root, lang)
 		normalizeCSizeofUnknownTypeIdentifiers(root, source, lang)
 		normalizeCCastUnknownTypeIdentifiers(root, source, lang)
+		normalizeCBareTypeIdentifierExpressionStatements(root, source, lang)
+		normalizeCPreprocNewlineSpans(root, source, lang)
 		normalizeCPointerAssignmentPrecedence(root, lang)
 	case "c_sharp":
 		normalizeCSharpTypeConstraintKeywords(root, lang)
@@ -1597,6 +1599,86 @@ func normalizeCVariadicParameterEllipsis(root *Node, lang *Language) {
 		}
 	}
 	rewrite(root)
+}
+
+func normalizeCPreprocNewlineSpans(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || (lang.Name != "c" && lang.Name != "cpp") || len(source) == 0 {
+		return
+	}
+	nlSym, ok := symbolByName(lang, "\n")
+	if !ok {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		for _, child := range n.children {
+			if child != nil && child.symbol == nlSym && child.endByte < uint32(len(source)) {
+				// Extend newline tokens to include consecutive newlines/whitespace
+				end := child.endByte
+				for end < uint32(len(source)) && (source[end] == '\n' || source[end] == '\r') {
+					end++
+				}
+				if end > child.endByte {
+					child.endByte = end
+					child.endPoint = advancePointByBytes(Point{}, source[:end])
+				}
+			}
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeCBareTypeIdentifierExpressionStatements(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "c" {
+		return
+	}
+	compoundSym, ok1 := symbolByName(lang, "compound_statement")
+	typeIdSym, ok2 := symbolByName(lang, "type_identifier")
+	semiSym, ok3 := symbolByName(lang, ";")
+	exprStmtSym, ok4 := symbolByName(lang, "expression_statement")
+	identSym, ok5 := symbolByName(lang, "identifier")
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+		return
+	}
+	exprStmtNamed := int(exprStmtSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[exprStmtSym].Named
+	identNamed := int(identSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[identSym].Named
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.symbol == compoundSym {
+			// Look for bare type_identifier ; pairs that should be expression_statement(identifier ;)
+			newChildren := make([]*Node, 0, len(n.children))
+			for i := 0; i < len(n.children); i++ {
+				child := n.children[i]
+				if child != nil && child.symbol == typeIdSym && i+1 < len(n.children) && n.children[i+1] != nil && n.children[i+1].symbol == semiSym {
+					semi := n.children[i+1]
+					ident := newLeafNodeInArena(n.ownerArena, identSym, identNamed, child.startByte, child.endByte, child.startPoint, child.endPoint)
+					exprStmt := newParentNodeInArena(n.ownerArena, exprStmtSym, exprStmtNamed, []*Node{ident, semi}, nil, 0)
+					exprStmt.startByte = child.startByte
+					exprStmt.startPoint = child.startPoint
+					exprStmt.endByte = semi.endByte
+					exprStmt.endPoint = semi.endPoint
+					newChildren = append(newChildren, exprStmt)
+					i++ // skip the semicolon
+					continue
+				}
+				newChildren = append(newChildren, child)
+			}
+			if len(newChildren) != len(n.children) {
+				n.children = newChildren
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Language) {
