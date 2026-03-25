@@ -630,6 +630,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeJavaScriptTypeScriptBinaryPrecedence(root, lang)
 		normalizeTypeScriptRecoveredNamespaceRoot(root, source, lang)
 		normalizeTypeScriptCompatibility(root, source, lang)
+		normalizeCollapsedNamedLeafChildren(root, lang, "existential_type", "*")
 	case "zig":
 		normalizeZigEmptyInitListFields(root, lang)
 	}
@@ -4534,26 +4535,37 @@ func normalizeCobolPeriodChildren(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") {
 		return
 	}
-	periodSym, ok := symbolByName(lang, "period")
+	normalizeCollapsedNamedLeafChildren(root, lang, "period", ".")
+}
+
+// normalizeCollapsedNamedLeafChildren restores collapsed single-anonymous-child
+// nodes. When a named node (parentName) wraps a single anonymous token
+// (childName) and the collapse logic strips the child, this function
+// reconstructs the child so the tree matches C tree-sitter output.
+func normalizeCollapsedNamedLeafChildren(root *Node, lang *Language, parentName, childName string) {
+	if root == nil || lang == nil {
+		return
+	}
+	parentSym, ok := symbolByName(lang, parentName)
 	if !ok {
 		return
 	}
-	dotSym, dotOk := symbolByName(lang, ".")
-	if !dotOk {
+	childSym, childOk := symbolByName(lang, childName)
+	if !childOk {
 		return
 	}
-	dotNamed := false
-	if int(dotSym) < len(lang.SymbolMetadata) {
-		dotNamed = lang.SymbolMetadata[dotSym].Named
+	childNamed := false
+	if int(childSym) < len(lang.SymbolMetadata) {
+		childNamed = lang.SymbolMetadata[childSym].Named
 	}
 	var walk func(*Node)
 	walk = func(n *Node) {
 		if n == nil {
 			return
 		}
-		if n.symbol == periodSym && len(n.children) == 0 {
-			dot := newLeafNodeInArena(n.ownerArena, dotSym, dotNamed, n.startByte, n.endByte, n.startPoint, n.endPoint)
-			n.children = cloneNodeSliceInArena(n.ownerArena, []*Node{dot})
+		if n.symbol == parentSym && len(n.children) == 0 {
+			child := newLeafNodeInArena(n.ownerArena, childSym, childNamed, n.startByte, n.endByte, n.startPoint, n.endPoint)
+			n.children = cloneNodeSliceInArena(n.ownerArena, []*Node{child})
 		}
 		for _, child := range n.children {
 			walk(child)
