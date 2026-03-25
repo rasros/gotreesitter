@@ -1209,8 +1209,10 @@ func normalizeCPreprocessorDirectiveShapes(root *Node, source []byte, lang *Lang
 		return
 	}
 	preprocDefSym, hasPreprocDef := symbolByName(lang, "preproc_def")
+	preprocArgSym, hasPreprocArg := symbolByName(lang, "preproc_arg")
 	nameFieldID, hasNameField := lang.FieldByName("name")
 	valueFieldID, hasValueField := lang.FieldByName("value")
+	preprocArgNamed := hasPreprocArg && int(preprocArgSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[preprocArgSym].Named
 
 	out := make([]*Node, 0, len(root.children))
 	changed := false
@@ -1219,8 +1221,8 @@ func normalizeCPreprocessorDirectiveShapes(root *Node, source []byte, lang *Lang
 		if child == nil {
 			continue
 		}
-		if hasPreprocDef && hasNameField && hasValueField {
-			if normalizeCWhitespaceSeparatedFunctionMacro(child, source, lang, preprocDefSym, nameFieldID, valueFieldID) {
+		if hasPreprocDef && hasPreprocArg && hasNameField && hasValueField {
+			if normalizeCWhitespaceSeparatedFunctionMacro(child, source, lang, preprocDefSym, preprocArgSym, preprocArgNamed, nameFieldID, valueFieldID) {
 				changed = true
 			}
 		}
@@ -1247,15 +1249,27 @@ func normalizeCPreprocessorDirectiveShapes(root *Node, source []byte, lang *Lang
 	extendNodeToTrailingWhitespace(root, source)
 }
 
-func normalizeCWhitespaceSeparatedFunctionMacro(node *Node, source []byte, lang *Language, preprocDefSym Symbol, nameFieldID, valueFieldID FieldID) bool {
-	if node == nil || lang == nil || node.Type(lang) != "preproc_function_def" || len(node.children) != 4 {
+func normalizeCWhitespaceSeparatedFunctionMacro(node *Node, source []byte, lang *Language, preprocDefSym, preprocArgSym Symbol, preprocArgNamed bool, nameFieldID, valueFieldID FieldID) bool {
+	if node == nil || lang == nil || node.Type(lang) != "preproc_function_def" || len(node.children) < 3 || len(node.children) > 4 {
 		return false
 	}
 	name := node.children[1]
 	params := node.children[2]
-	value := node.children[3]
-	if name == nil || params == nil || value == nil || name.Type(lang) != "identifier" || params.Type(lang) != "preproc_params" || value.Type(lang) != "preproc_arg" {
+	if name == nil || params == nil || name.Type(lang) != "identifier" || params.Type(lang) != "preproc_params" {
 		return false
+	}
+	value := (*Node)(nil)
+	if len(node.children) == 4 {
+		value = node.children[3]
+		if value == nil || value.Type(lang) != "preproc_arg" {
+			return false
+		}
+	} else {
+		value = newParentNodeInArena(node.ownerArena, preprocArgSym, preprocArgNamed, nil, nil, 0)
+		value.startByte = params.startByte
+		value.startPoint = params.startPoint
+		value.endByte = params.endByte
+		value.endPoint = params.endPoint
 	}
 	if name.endByte >= params.startByte || params.startByte > uint32(len(source)) {
 		return false
