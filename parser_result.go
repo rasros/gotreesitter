@@ -522,6 +522,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeCobolLeadingAreaStart(root, source, lang)
 		normalizeCobolTopLevelDefinitionEnd(root, source, lang)
 		normalizeCobolDivisionSiblingEnds(root, source, lang)
+		normalizeCobolPeriodChildren(root, source, lang)
 	case "comment":
 		normalizeCommentTrailingExtraTrivia(root, source, lang)
 	case "cooklang":
@@ -4433,7 +4434,13 @@ func normalizeCobolLeadingAreaStart(root *Node, source []byte, lang *Language) {
 	}
 	start := firstNonWhitespaceByte(source)
 	if start == 0 {
-		return
+		// COBOL fixed format: columns 1-6 are sequence numbers (non-whitespace).
+		// Detect this pattern and use column 7 (byte 6) as the adjusted start.
+		if len(source) >= 7 && (source[6] == ' ' || source[6] == '*' || source[6] == '-' || source[6] == '/') {
+			start = 6
+		} else {
+			return
+		}
 	}
 	startPoint := advancePointByBytes(Point{}, source[:start])
 	setNodeStartTo := func(n *Node) {
@@ -4444,30 +4451,43 @@ func normalizeCobolLeadingAreaStart(root *Node, source []byte, lang *Language) {
 		n.startPoint = startPoint
 	}
 	setNodeStartTo(root)
-	if len(root.children) != 1 {
+	if len(root.children) == 0 {
 		return
 	}
-	def := root.children[0]
-	if def == nil || def.Type(lang) != "program_definition" {
+	def := (*Node)(nil)
+	for _, child := range root.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "program_definition" {
+			def = child
+			break
+		}
+	}
+	if def == nil {
 		return
 	}
 	setNodeStartTo(def)
-	if len(def.children) != 1 {
+	if len(def.children) == 0 {
 		return
 	}
-	div := def.children[0]
-	if div == nil || div.Type(lang) != "identification_division" {
-		return
+	for _, child := range def.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "identification_division" {
+			setNodeStartTo(child)
+			break
+		}
 	}
-	setNodeStartTo(div)
 }
 
 func normalizeCobolTopLevelDefinitionEnd(root *Node, source []byte, lang *Language) {
-	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) != 1 {
+	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) == 0 {
 		return
 	}
-	def := root.children[0]
-	if def == nil || def.IsExtra() || def.Type(lang) != "program_definition" {
+	def := (*Node)(nil)
+	for _, child := range root.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "program_definition" {
+			def = child
+			break
+		}
+	}
+	if def == nil {
 		return
 	}
 	end := lastNonTriviaByteEnd(source)
@@ -4479,11 +4499,17 @@ func normalizeCobolTopLevelDefinitionEnd(root *Node, source []byte, lang *Langua
 }
 
 func normalizeCobolDivisionSiblingEnds(root *Node, source []byte, lang *Language) {
-	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) != 1 {
+	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) == 0 {
 		return
 	}
-	def := root.children[0]
-	if def == nil || def.IsExtra() || def.Type(lang) != "program_definition" {
+	def := (*Node)(nil)
+	for _, child := range root.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "program_definition" {
+			def = child
+			break
+		}
+	}
+	if def == nil {
 		return
 	}
 	for i := 0; i+1 < len(def.children); i++ {
@@ -4502,6 +4528,38 @@ func normalizeCobolDivisionSiblingEnds(root *Node, source []byte, lang *Language
 		cur.endByte = end
 		cur.endPoint = advancePointByBytes(Point{}, source[:end])
 	}
+}
+
+func normalizeCobolPeriodChildren(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") {
+		return
+	}
+	periodSym, ok := symbolByName(lang, "period")
+	if !ok {
+		return
+	}
+	dotSym, dotOk := symbolByName(lang, ".")
+	if !dotOk {
+		return
+	}
+	dotNamed := false
+	if int(dotSym) < len(lang.SymbolMetadata) {
+		dotNamed = lang.SymbolMetadata[dotSym].Named
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.symbol == periodSym && len(n.children) == 0 {
+			dot := newLeafNodeInArena(n.ownerArena, dotSym, dotNamed, n.startByte, n.endByte, n.startPoint, n.endPoint)
+			n.children = cloneNodeSliceInArena(n.ownerArena, []*Node{dot})
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 func normalizeNimTopLevelCallEnd(root *Node, source []byte, lang *Language) {

@@ -223,7 +223,9 @@ func NewParser(lang *Language) *Parser {
 				if !strings.HasSuffix(name, "_division") &&
 					!strings.Contains(name, "_statement") &&
 					!strings.HasSuffix(name, "_option") &&
-					!strings.HasSuffix(name, "_clause") {
+					!strings.HasSuffix(name, "_clause") &&
+					!strings.HasSuffix(name, "_section") &&
+					!strings.HasSuffix(name, "_paragraph") {
 					continue
 				}
 				if p.forceRawSpanTable == nil {
