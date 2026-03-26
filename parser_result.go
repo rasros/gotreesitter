@@ -646,6 +646,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "rst":
 		normalizeRSTTopLevelSectionEnd(root, source, lang)
 	case "rust":
+		normalizeRustRecoveredPatternStatementsRoot(root, source, p)
 		normalizeRustRecoveredFunctionItems(root, source, lang)
 		normalizeRustRecoveredStructExpressionRoot(root, source, lang)
 		normalizeRustTokenBindingPatterns(root, source, lang)
@@ -13377,6 +13378,53 @@ func normalizeRustTokenBindingPatterns(root *Node, source []byte, lang *Language
 	walk(root)
 }
 
+func normalizeRustRecoveredPatternStatementsRoot(root *Node, source []byte, p *Parser) {
+	if root == nil || p == nil || p.language == nil || p.language.Name != "rust" || p.skipRecoveryReparse || root.Type(p.language) != "ERROR" || len(source) == 0 {
+		return
+	}
+	if !rustLooksLikePatternStatementRoot(root, p.language) {
+		return
+	}
+	recovered, ok := rustRecoverTopLevelChunks(source, p, root.ownerArena)
+	if !ok || len(recovered) == 0 {
+		return
+	}
+	sourceFileSym, ok := symbolByName(p.language, "source_file")
+	if !ok {
+		return
+	}
+	root.children = cloneNodeSliceInArena(root.ownerArena, recovered)
+	root.fieldIDs = nil
+	root.fieldSources = nil
+	root.symbol = sourceFileSym
+	root.isNamed = rustNamedForSymbol(p.language, sourceFileSym)
+	populateParentNode(root, root.children)
+	root.hasError = false
+	if root.endByte < uint32(len(source)) && bytesAreTrivia(source[root.endByte:]) {
+		extendNodeEndTo(root, uint32(len(source)), source)
+	}
+}
+
+func rustLooksLikePatternStatementRoot(root *Node, lang *Language) bool {
+	if root == nil || lang == nil || len(root.children) == 0 {
+		return false
+	}
+	sawError := false
+	for _, child := range root.children {
+		if child == nil {
+			continue
+		}
+		switch child.Type(lang) {
+		case "expression_statement", "let_declaration":
+		case "ERROR":
+			sawError = true
+		default:
+			return false
+		}
+	}
+	return sawError
+}
+
 func normalizeRustRecoveredFunctionItems(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "rust" || len(source) == 0 || len(root.children) == 0 {
 		return
@@ -13799,6 +13847,361 @@ func rustSplitTopLevelTypeArgSpans(source []byte, start, end uint32) [][2]uint32
 		spans = append(spans, [2]uint32{a, b})
 	}
 	return spans
+}
+
+func rustRecoverTopLevelChunks(source []byte, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || len(source) == 0 {
+		return nil, false
+	}
+	spans := rustTopLevelChunkSpans(source)
+	if len(spans) == 0 {
+		return nil, false
+	}
+	out := make([]*Node, 0, len(spans))
+	for _, span := range spans {
+		nodes, ok := rustRecoverTopLevelChunkNodesFromRange(source, span[0], span[1], p, arena)
+		if !ok || len(nodes) == 0 {
+			return nil, false
+		}
+		out = append(out, nodes...)
+	}
+	return out, true
+}
+
+func rustTopLevelChunkSpans(source []byte) [][2]uint32 {
+	var spans [][2]uint32
+	start := uint32(0)
+	for start < uint32(len(source)) && rustIsSpaceByte(source[start]) {
+		start++
+	}
+	if start >= uint32(len(source)) {
+		return nil
+	}
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	escaped := false
+	for i := start; i < uint32(len(source)); i++ {
+		b := source[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+				if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+					next := rustSkipSpaceBytes(source, i+1)
+					if next >= uint32(len(source)) || source[next] != ';' {
+						spans = append(spans, [2]uint32{start, i + 1})
+						start = next
+					}
+				}
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case ';':
+			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				spans = append(spans, [2]uint32{start, i + 1})
+				start = rustSkipSpaceBytes(source, i+1)
+			}
+		}
+	}
+	if start < uint32(len(source)) {
+		start = rustSkipSpaceBytes(source, start)
+		if start < uint32(len(source)) {
+			return nil
+		}
+	}
+	return spans
+}
+
+func rustRecoverTopLevelChunkNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	chunk := source[start:end]
+	tree, err := p.parseForRecovery(chunk)
+	if err == nil && tree != nil && tree.RootNode() != nil {
+		startPoint := advancePointByBytes(Point{}, source[:start])
+		offsetRoot := tree.RootNodeWithOffset(start, startPoint)
+		if offsetRoot != nil && !offsetRoot.HasError() {
+			nodes := rustExtractRecoveredTopLevelNodes(offsetRoot, p.language, arena)
+			tree.Release()
+			if len(nodes) > 0 {
+				return nodes, true
+			}
+		}
+		tree.Release()
+	}
+	if node, ok := rustRecoverClosureExpressionStatementFromRange(source, start, end, p, arena); ok {
+		return []*Node{node}, true
+	}
+	return nil, false
+}
+
+func rustExtractRecoveredTopLevelNodes(root *Node, lang *Language, arena *nodeArena) []*Node {
+	if root == nil || lang == nil {
+		return nil
+	}
+	if root.Type(lang) != "source_file" {
+		if root.IsNamed() {
+			if arena != nil {
+				return []*Node{cloneTreeNodesIntoArena(root, arena)}
+			}
+			return []*Node{root}
+		}
+		return nil
+	}
+	out := make([]*Node, 0, root.NamedChildCount())
+	for i := 0; i < root.NamedChildCount(); i++ {
+		child := root.NamedChild(i)
+		if child == nil {
+			continue
+		}
+		if arena != nil {
+			out = append(out, cloneTreeNodesIntoArena(child, arena))
+		} else {
+			out = append(out, child)
+		}
+	}
+	return out
+}
+
+func rustRecoverClosureExpressionStatementFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '|' || source[end-1] != ';' {
+		return nil, false
+	}
+	pipePos, ok := rustFindTopLevelByte(source, start+1, end-1, '|')
+	if !ok || pipePos <= start+1 || pipePos+1 >= end {
+		return nil, false
+	}
+	pattern, ok := rustRecoverPatternNodeFromRange(source, start+1, pipePos, p, arena)
+	if !ok {
+		return nil, false
+	}
+	body, ok := rustRecoverRustExpressionNodeFromRange(source, pipePos+1, end-1, p, arena)
+	if !ok {
+		return nil, false
+	}
+	paramsSym, ok := symbolByName(p.language, "closure_parameters")
+	if !ok {
+		return nil, false
+	}
+	closureSym, ok := symbolByName(p.language, "closure_expression")
+	if !ok {
+		return nil, false
+	}
+	exprStmtSym, ok := symbolByName(p.language, "expression_statement")
+	if !ok {
+		return nil, false
+	}
+	params := newParentNodeInArena(
+		arena,
+		paramsSym,
+		rustNamedForSymbol(p.language, paramsSym),
+		[]*Node{pattern},
+		nil,
+		0,
+	)
+	params.startByte = start
+	params.startPoint = advancePointByBytes(Point{}, source[:start])
+	params.endByte = pipePos + 1
+	params.endPoint = advancePointByBytes(Point{}, source[:pipePos+1])
+
+	closure := newParentNodeInArena(
+		arena,
+		closureSym,
+		rustNamedForSymbol(p.language, closureSym),
+		[]*Node{params, body},
+		nil,
+		0,
+	)
+	closure.startByte = start
+	closure.startPoint = params.startPoint
+	closure.endByte = body.endByte
+	closure.endPoint = body.endPoint
+
+	stmt := newParentNodeInArena(
+		arena,
+		exprStmtSym,
+		rustNamedForSymbol(p.language, exprStmtSym),
+		[]*Node{closure},
+		nil,
+		0,
+	)
+	stmt.startByte = start
+	stmt.startPoint = params.startPoint
+	stmt.endByte = end
+	stmt.endPoint = advancePointByBytes(Point{}, source[:end])
+	return stmt, true
+}
+
+func rustRecoverPatternNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	const prefix = "fn _("
+	const suffix = ": u8) {}\n"
+	pattern := bytes.TrimSpace(source[start:end])
+	if len(pattern) == 0 {
+		return nil, false
+	}
+	wrapped := make([]byte, 0, len(prefix)+len(pattern)+len(suffix))
+	wrapped = append(wrapped, prefix...)
+	wrapped = append(wrapped, pattern...)
+	wrapped = append(wrapped, suffix...)
+	tree, err := p.parseForRecovery(wrapped)
+	if err != nil || tree == nil || tree.RootNode() == nil {
+		if tree != nil {
+			tree.Release()
+		}
+		return nil, false
+	}
+	defer tree.Release()
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	prefixPoint := advancePointByBytes(Point{}, []byte(prefix))
+	if startPoint.Row < prefixPoint.Row {
+		return nil, false
+	}
+	offsetRoot := tree.RootNodeWithOffset(start-uint32(len(prefix)), Point{Row: startPoint.Row - prefixPoint.Row, Column: startPoint.Column})
+	if offsetRoot == nil || offsetRoot.HasError() {
+		return nil, false
+	}
+	node := rustExtractRecoveredParameterPattern(offsetRoot, p.language, arena)
+	recomputeNodePointsFromBytes(node, source)
+	return node, node != nil
+}
+
+func rustRecoverRustExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	const prefix = "fn _() { let _ = "
+	const suffix = ";\n}\n"
+	expr := bytes.TrimSpace(source[start:end])
+	if len(expr) == 0 {
+		return nil, false
+	}
+	wrapped := make([]byte, 0, len(prefix)+len(expr)+len(suffix))
+	wrapped = append(wrapped, prefix...)
+	wrapped = append(wrapped, expr...)
+	wrapped = append(wrapped, suffix...)
+	tree, err := p.parseForRecovery(wrapped)
+	if err != nil || tree == nil || tree.RootNode() == nil {
+		if tree != nil {
+			tree.Release()
+		}
+		return nil, false
+	}
+	defer tree.Release()
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	prefixPoint := advancePointByBytes(Point{}, []byte(prefix))
+	if startPoint.Row < prefixPoint.Row {
+		return nil, false
+	}
+	offsetRoot := tree.RootNodeWithOffset(start-uint32(len(prefix)), Point{Row: startPoint.Row - prefixPoint.Row, Column: startPoint.Column})
+	if offsetRoot == nil || offsetRoot.HasError() {
+		return nil, false
+	}
+	node := rustExtractRecoveredLetInitializer(offsetRoot, p.language, arena)
+	recomputeNodePointsFromBytes(node, source)
+	return node, node != nil
+}
+
+func rustExtractRecoveredParameterPattern(root *Node, lang *Language, arena *nodeArena) *Node {
+	if root == nil || lang == nil {
+		return nil
+	}
+	var walk func(*Node) *Node
+	walk = func(n *Node) *Node {
+		if n == nil {
+			return nil
+		}
+		if n.Type(lang) == "parameter" {
+			for i := 0; i < n.ChildCount(); i++ {
+				child := n.Child(i)
+				if child != nil && child.IsNamed() {
+					if arena != nil {
+						return cloneTreeNodesIntoArena(child, arena)
+					}
+					return child
+				}
+			}
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			if out := walk(n.Child(i)); out != nil {
+				return out
+			}
+		}
+		return nil
+	}
+	return walk(root)
+}
+
+func rustExtractRecoveredLetInitializer(root *Node, lang *Language, arena *nodeArena) *Node {
+	if root == nil || lang == nil {
+		return nil
+	}
+	var walk func(*Node) *Node
+	walk = func(n *Node) *Node {
+		if n == nil {
+			return nil
+		}
+		if n.Type(lang) == "let_declaration" {
+			var lastNamed *Node
+			for i := 0; i < n.ChildCount(); i++ {
+				child := n.Child(i)
+				if child == nil || !child.IsNamed() {
+					continue
+				}
+				lastNamed = child
+			}
+			if lastNamed != nil {
+				if arena != nil {
+					return cloneTreeNodesIntoArena(lastNamed, arena)
+				}
+				return lastNamed
+			}
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			if out := walk(n.Child(i)); out != nil {
+				return out
+			}
+		}
+		return nil
+	}
+	return walk(root)
 }
 
 func normalizeRustRecoveredStructExpressionRoot(root *Node, source []byte, lang *Language) {
@@ -14680,6 +15083,8 @@ func rustNamedForSymbol(lang *Language, sym Symbol) bool {
 			"identifier",
 			"expression_statement",
 			"let_declaration",
+			"closure_expression",
+			"closure_parameters",
 			"struct_expression",
 			"field_initializer_list",
 			"field_initializer",

@@ -76,6 +76,41 @@ func TestRustStructExpressionParity(t *testing.T) {
 	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, sample)
 }
 
+func TestRustPatternStatementParity(t *testing.T) {
+	jsonPath := rustGrammarJSONPathForTest(t)
+	source, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Skipf("Rust grammar.json not available: %v", err)
+	}
+	gram, err := ImportGrammarJSON(source)
+	if err != nil {
+		t.Fatalf("import Rust grammar.json: %v", err)
+	}
+	genLang, err := generateWithTimeout(gram, 90*time.Second)
+	if err != nil {
+		t.Fatalf("generate Rust language: %v", err)
+	}
+	refLang := grammars.RustLanguage()
+	adaptExternalScanner(refLang, genLang)
+
+	sample := "if let A(x) | B(x) = expr {\n" +
+		"    do_stuff_with(x);\n" +
+		"}\n\n" +
+		"while let A(x) | B(x) = expr {\n" +
+		"    do_stuff_with(x);\n" +
+		"}\n\n" +
+		"let Ok(index) | Err(index) = slice.binary_search(&x);\n\n" +
+		"for ref a | b in c {}\n\n" +
+		"let Ok(x) | Err(x) = binary_search(x);\n\n" +
+		"for A | B | C in c {}\n\n" +
+		"|(Ok(x) | Err(x))| expr();\n\n" +
+		"let ref mut x @ (A | B | C);\n\n" +
+		"fn foo((1 | 2 | 3): u8) {}\n\n" +
+		"if let x!() | y!() = () {}\n"
+
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, sample)
+}
+
 func rustGrammarJSONPathForTest(t *testing.T) string {
 	t.Helper()
 
