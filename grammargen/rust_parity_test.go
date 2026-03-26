@@ -111,6 +111,41 @@ func TestRustPatternStatementParity(t *testing.T) {
 	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, sample)
 }
 
+func TestRustMacroInvocationParity(t *testing.T) {
+	jsonPath := rustGrammarJSONPathForTest(t)
+	source, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Skipf("Rust grammar.json not available: %v", err)
+	}
+	gram, err := ImportGrammarJSON(source)
+	if err != nil {
+		t.Fatalf("import Rust grammar.json: %v", err)
+	}
+	genLang, err := generateWithTimeout(gram, 90*time.Second)
+	if err != nil {
+		t.Fatalf("generate Rust language: %v", err)
+	}
+	refLang := grammars.RustLanguage()
+	adaptExternalScanner(refLang, genLang)
+
+	sample := "a!(* a *);\n" +
+		"a!(& a &);\n" +
+		"a!(- a -);\n" +
+		"a!(b + c + +);\n" +
+		"a!('a'..='z');\n" +
+		"a!('\\u{0}'..='\\u{2}');\n" +
+		"a!('lifetime)\n" +
+		"default!(a);\n" +
+		"union!(a);\n" +
+		"a!($);\n" +
+		"a!($());\n" +
+		"a!($ a $);\n" +
+		"a!(${$([ a ])});\n" +
+		"a!($a $a:ident $($a);*);\n"
+
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, sample)
+}
+
 func rustGrammarJSONPathForTest(t *testing.T) string {
 	t.Helper()
 

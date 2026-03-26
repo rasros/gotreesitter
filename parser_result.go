@@ -650,6 +650,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeRustRecoveredFunctionItems(root, source, lang)
 		normalizeRustRecoveredStructExpressionRoot(root, source, lang)
 		normalizeRustTokenBindingPatterns(root, source, lang)
+		normalizeRustRecoveredTokenTrees(root, source, lang)
 		normalizeRustSourceFileRoot(root, source, lang)
 	case "ruby":
 		normalizeRubyThenStarts(root, lang)
@@ -13378,6 +13379,33 @@ func normalizeRustTokenBindingPatterns(root *Node, source []byte, lang *Language
 	walk(root)
 }
 
+func normalizeRustRecoveredTokenTrees(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "rust" || len(source) == 0 {
+		return
+	}
+
+	var walk func(*Node)
+	walk = func(node *Node) {
+		if node == nil {
+			return
+		}
+		for _, child := range node.children {
+			walk(child)
+		}
+		if node.Type(lang) != "token_tree" || !node.HasError() {
+			return
+		}
+		recovered, ok := rustBuildRecoveredTokenTree(node.ownerArena, source, lang, node.startByte, node.endByte)
+		if !ok || recovered == nil {
+			return
+		}
+		*node = *recovered
+	}
+
+	walk(root)
+	rustRefreshRecoveredErrorFlags(root)
+}
+
 func normalizeRustRecoveredPatternStatementsRoot(root *Node, source []byte, p *Parser) {
 	if root == nil || p == nil || p.language == nil || p.language.Name != "rust" || p.skipRecoveryReparse || root.Type(p.language) != "ERROR" || len(source) == 0 {
 		return
@@ -14917,6 +14945,271 @@ func rustSplitTopLevelCommaSpans(source []byte, start, end uint32) [][2]uint32 {
 		spans = append(spans, [2]uint32{a, b})
 	}
 	return spans
+}
+
+func rustBuildRecoveredTokenTree(arena *nodeArena, source []byte, lang *Language, start, end uint32) (*Node, bool) {
+	if lang == nil || lang.Name != "rust" || start >= end || int(end) > len(source) || end-start < 2 {
+		return nil, false
+	}
+	open := source[start]
+	close := source[end-1]
+	switch {
+	case open == '(' && close == ')':
+	case open == '[' && close == ']':
+	case open == '{' && close == '}':
+	default:
+		return nil, false
+	}
+
+	tokenTreeSym, ok := symbolByName(lang, "token_tree")
+	if !ok {
+		return nil, false
+	}
+	children, ok := rustBuildRecoveredTokenTreeChildren(arena, source, lang, start+1, end-1)
+	if !ok {
+		return nil, false
+	}
+	node := newParentNodeInArena(arena, tokenTreeSym, rustNamedForSymbol(lang, tokenTreeSym), children, nil, 0)
+	node.startByte = start
+	node.endByte = end
+	node.startPoint = advancePointByBytes(Point{}, source[:start])
+	node.endPoint = advancePointByBytes(Point{}, source[:end])
+	node.hasError = false
+	populateParentNode(node, node.children)
+	return node, true
+}
+
+func rustBuildRecoveredTokenTreeChildren(arena *nodeArena, source []byte, lang *Language, start, end uint32) ([]*Node, bool) {
+	if start > end || int(end) > len(source) {
+		return nil, false
+	}
+	identifierSym, ok := symbolByName(lang, "identifier")
+	if !ok {
+		return nil, false
+	}
+	charLiteralSym, hasCharLiteral := symbolByName(lang, "char_literal")
+
+	var children []*Node
+	for i := start; i < end; {
+		switch c := source[i]; {
+		case rustIsSpaceByte(c):
+			i++
+		case c == '/' && i+1 < end && source[i+1] == '/':
+			commentEnd := i + 2
+			for commentEnd < end && source[commentEnd] != '\n' {
+				commentEnd++
+			}
+			if comment, ok := rustBuildRecoveredTriviaNode(arena, source, lang, i, commentEnd, "line_comment"); ok {
+				children = append(children, comment)
+			}
+			i = commentEnd
+		case c == '/' && i+1 < end && source[i+1] == '*':
+			commentEnd := rustFindBlockCommentEnd(source, i+2, end)
+			if commentEnd <= i+1 {
+				return nil, false
+			}
+			if comment, ok := rustBuildRecoveredTriviaNode(arena, source, lang, i, commentEnd, "block_comment"); ok {
+				children = append(children, comment)
+			}
+			i = commentEnd
+		case c == '\'':
+			if litEnd, ok := rustFindCharLiteralEnd(source, i, end); ok {
+				if hasCharLiteral {
+					children = append(children, newLeafNodeInArena(
+						arena,
+						charLiteralSym,
+						rustNamedForSymbol(lang, charLiteralSym),
+						i,
+						litEnd,
+						advancePointByBytes(Point{}, source[:i]),
+						advancePointByBytes(Point{}, source[:litEnd]),
+					))
+				}
+				i = litEnd
+				continue
+			}
+			nameStart := i + 1
+			nameEnd := nameStart
+			for nameEnd < end && rustIsIdentByte(source[nameEnd]) {
+				nameEnd++
+			}
+			if nameEnd > nameStart {
+				children = append(children, newLeafNodeInArena(
+					arena,
+					identifierSym,
+					rustNamedForSymbol(lang, identifierSym),
+					nameStart,
+					nameEnd,
+					advancePointByBytes(Point{}, source[:nameStart]),
+					advancePointByBytes(Point{}, source[:nameEnd]),
+				))
+				i = nameEnd
+				continue
+			}
+			i++
+		case c == '$':
+			next := i + 1
+			if next < end {
+				switch source[next] {
+				case '(', '[', '{':
+					closePos := rustFindMatchingDelimiter(source, int(next), source[next], rustMatchingDelimiter(source[next]))
+					if closePos >= 0 && uint32(closePos) < end {
+						nested, ok := rustBuildRecoveredTokenTree(arena, source, lang, next, uint32(closePos+1))
+						if !ok {
+							return nil, false
+						}
+						children = append(children, nested)
+						i = uint32(closePos + 1)
+						continue
+					}
+				}
+			}
+			nameStart := next
+			nameEnd := nameStart
+			for nameEnd < end && rustIsIdentByte(source[nameEnd]) {
+				nameEnd++
+			}
+			if nameEnd > nameStart {
+				children = append(children, newLeafNodeInArena(
+					arena,
+					identifierSym,
+					rustNamedForSymbol(lang, identifierSym),
+					nameStart,
+					nameEnd,
+					advancePointByBytes(Point{}, source[:nameStart]),
+					advancePointByBytes(Point{}, source[:nameEnd]),
+				))
+				i = nameEnd
+				if i+1 < end && source[i] == ':' && rustIsIdentByte(source[i+1]) {
+					fragStart := i + 1
+					fragEnd := fragStart
+					for fragEnd < end && rustIsIdentByte(source[fragEnd]) {
+						fragEnd++
+					}
+					children = append(children, newLeafNodeInArena(
+						arena,
+						identifierSym,
+						rustNamedForSymbol(lang, identifierSym),
+						fragStart,
+						fragEnd,
+						advancePointByBytes(Point{}, source[:fragStart]),
+						advancePointByBytes(Point{}, source[:fragEnd]),
+					))
+					i = fragEnd
+				}
+				continue
+			}
+			i++
+		case rustIsIdentByte(c):
+			nameStart := i
+			nameEnd := i + 1
+			for nameEnd < end && rustIsIdentByte(source[nameEnd]) {
+				nameEnd++
+			}
+			children = append(children, newLeafNodeInArena(
+				arena,
+				identifierSym,
+				rustNamedForSymbol(lang, identifierSym),
+				nameStart,
+				nameEnd,
+				advancePointByBytes(Point{}, source[:nameStart]),
+				advancePointByBytes(Point{}, source[:nameEnd]),
+			))
+			i = nameEnd
+		case c == '(' || c == '[' || c == '{':
+			closePos := rustFindMatchingDelimiter(source, int(i), c, rustMatchingDelimiter(c))
+			if closePos < 0 || uint32(closePos) >= end {
+				return nil, false
+			}
+			nested, ok := rustBuildRecoveredTokenTree(arena, source, lang, i, uint32(closePos+1))
+			if !ok {
+				return nil, false
+			}
+			children = append(children, nested)
+			i = uint32(closePos + 1)
+		default:
+			i++
+		}
+	}
+	return children, true
+}
+
+func rustBuildRecoveredTriviaNode(arena *nodeArena, source []byte, lang *Language, start, end uint32, typeName string) (*Node, bool) {
+	sym, ok := symbolByName(lang, typeName)
+	if !ok {
+		return nil, false
+	}
+	return newLeafNodeInArena(
+		arena,
+		sym,
+		rustNamedForSymbol(lang, sym),
+		start,
+		end,
+		advancePointByBytes(Point{}, source[:start]),
+		advancePointByBytes(Point{}, source[:end]),
+	), true
+}
+
+func rustRefreshRecoveredErrorFlags(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	hasError := node.symbol == errorSymbol
+	for _, child := range node.children {
+		if rustRefreshRecoveredErrorFlags(child) {
+			hasError = true
+		}
+	}
+	node.hasError = hasError
+	return node.IsError() || node.hasError
+}
+
+func rustFindBlockCommentEnd(source []byte, start, end uint32) uint32 {
+	depth := 1
+	for i := start; i+1 < end; i++ {
+		switch {
+		case source[i] == '/' && source[i+1] == '*':
+			depth++
+			i++
+		case source[i] == '*' && source[i+1] == '/':
+			depth--
+			i++
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return 0
+}
+
+func rustFindCharLiteralEnd(source []byte, start, end uint32) (uint32, bool) {
+	if start >= end || source[start] != '\'' {
+		return 0, false
+	}
+	for i := start + 1; i < end; i++ {
+		switch source[i] {
+		case '\\':
+			i++
+		case '\'':
+			return i + 1, true
+		case '\n', '\r':
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+func rustMatchingDelimiter(open byte) byte {
+	switch open {
+	case '(':
+		return ')'
+	case '[':
+		return ']'
+	case '{':
+		return '}'
+	default:
+		return 0
+	}
 }
 
 func rustFindTopLevelDoubleColon(source []byte, start, end uint32) (uint32, bool) {
