@@ -132,6 +132,7 @@ func (p *Parser) pushOrExtendErrorNode(s *glrStack, state StateID, tok Token, no
 			top.endByte = tok.EndByte
 			top.endPoint = tok.EndPoint
 			top.hasError = true
+			nodeBumpEquivVersion(top)
 			if s.byteOffset < top.endByte {
 				s.byteOffset = top.endByte
 			}
@@ -516,6 +517,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 		child.productionID = act.ProductionID
 		child.preGotoState = topState
 		child.parseState = targetState
+		nodeBumpEquivVersion(child)
 		p.pushStackNode(s, targetState, child, entryScratch, gssScratch)
 		for i := reducedEnd; i < actualEnd; i++ {
 			extra := windowEntries[i].node
@@ -523,6 +525,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 				continue
 			}
 			extra.parseState = targetState
+			nodeBumpEquivVersion(extra)
 			p.pushStackNode(s, targetState, extra, entryScratch, gssScratch)
 		}
 		s.score += int(act.DynamicPrecedence)
@@ -572,6 +575,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 			continue
 		}
 		extra.parseState = targetState
+		nodeBumpEquivVersion(extra)
 		p.pushStackNode(s, targetState, extra, entryScratch, gssScratch)
 	}
 
@@ -1951,6 +1955,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 		child.productionID = act.ProductionID
 		child.preGotoState = window.topState
 		child.parseState = targetState
+		nodeBumpEquivVersion(child)
 		p.pushStackNode(s, targetState, child, entryScratch, gssScratch)
 		for i := trailingStart; i < trailingEnd; i++ {
 			extra := entries[i].node
@@ -1958,6 +1963,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 				continue
 			}
 			extra.parseState = targetState
+			nodeBumpEquivVersion(extra)
 			p.pushStackNode(s, targetState, extra, entryScratch, gssScratch)
 		}
 		s.score += int(act.DynamicPrecedence)
@@ -2004,6 +2010,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 			continue
 		}
 		extra.parseState = targetState
+		nodeBumpEquivVersion(extra)
 		p.pushStackNode(s, targetState, extra, entryScratch, gssScratch)
 	}
 
