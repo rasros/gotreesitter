@@ -349,6 +349,9 @@ func (b *nfaBuilder) buildChoice(children []*Rule) (nfaFragment, error) {
 	if len(children) == 0 {
 		return b.buildEpsilon(), nil
 	}
+	if frag, ok := b.buildStringChoice(children); ok {
+		return frag, nil
+	}
 	start := b.addState()
 	end := b.addState()
 	for _, c := range children {
@@ -360,6 +363,42 @@ func (b *nfaBuilder) buildChoice(children []*Rule) (nfaFragment, error) {
 		b.addEpsilon(frag.end, end)
 	}
 	return nfaFragment{start, end}, nil
+}
+
+func (b *nfaBuilder) buildStringChoice(children []*Rule) (nfaFragment, bool) {
+	for _, child := range children {
+		if child == nil || child.Kind != RuleString {
+			return nfaFragment{}, false
+		}
+	}
+
+	start := b.addState()
+	end := b.addState()
+	edges := make(map[int]map[rune]int)
+	nextState := func(from int, r rune) int {
+		if byRune, ok := edges[from]; ok {
+			if to, ok := byRune[r]; ok {
+				return to
+			}
+		} else {
+			edges[from] = make(map[rune]int)
+		}
+		to := b.addState()
+		b.addCharRange(from, r, r, to)
+		edges[from][r] = to
+		return to
+	}
+
+	for _, child := range children {
+		cur := start
+		for i := 0; i < len(child.Value); {
+			r, size := utf8.DecodeRuneInString(child.Value[i:])
+			cur = nextState(cur, r)
+			i += size
+		}
+		b.addEpsilon(cur, end)
+	}
+	return nfaFragment{start, end}, true
 }
 
 func (b *nfaBuilder) buildStar(r *Rule) (nfaFragment, error) {

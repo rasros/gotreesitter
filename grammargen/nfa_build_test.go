@@ -24,3 +24,18 @@ func TestBuildSeqCoalescesAdjacentStrings(t *testing.T) {
 		t.Fatalf("seq fragment width = %d, want %d", seqFrag.end-seqFrag.start, stringFrag.end-stringFrag.start)
 	}
 }
+
+func TestBuildChoiceSharesStringPrefixes(t *testing.T) {
+	builder := newNFABuilder()
+	frag, err := builder.buildFromRule(Choice(Str("ab"), Str("ac")))
+	if err != nil {
+		t.Fatalf("buildFromRule(choice): %v", err)
+	}
+	if got, want := len(builder.states), 5; got != want {
+		t.Fatalf("state count = %d, want %d", got, want)
+	}
+	startTransitions := builder.states[frag.start].transitions
+	if len(startTransitions) != 1 || startTransitions[0].lo != 'a' || startTransitions[0].hi != 'a' {
+		t.Fatalf("start transitions = %#v, want single 'a' edge", startTransitions)
+	}
+}
