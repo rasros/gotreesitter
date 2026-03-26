@@ -598,6 +598,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "pug":
 		normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	case "python":
+		normalizeCollapsedNamedLeafChildren(root, lang, "pass_statement", "pass")
 		normalizePythonStringContinuationEscapes(root, source, lang)
 	case "rst":
 		normalizeRSTTopLevelSectionEnd(root, source, lang)
