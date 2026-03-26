@@ -7,8 +7,97 @@ for tags and release notes while still in `0.x`.
 
 ## [Unreleased]
 
+- Nothing yet.
+
+## [0.11.2] - 2026-03-26
+
 ### Added
-- `grammargen.GenerateLanguageAndBlob` and `GenerateLanguageAndBlobWithContext` to expose the compiled language and serialized blob from one generation pass without coupling callers to diagnostic reports.
+- Focused TypeScript and TSX snippet parity cases for const type parameters, template literal types, enums, and class method bodies drawn from corpus-style inputs.
+- COBOL snippet parity coverage for close/open statements, PIC forms, and `perform ... varying` cases that previously escaped smaller parity checks.
+- CSS to the curated `cgo_harness` focus-target board so it runs through the same isolated real-corpus and cgo parity entrypoints as the other tracked grammars.
+
+### Fixed
+- DFA token selection now evaluates base and after-whitespace lex modes from one shared path, restoring CSS function-value parity and JavaScript template-string corpus parity without skipping valid immediate tokens.
+- Imported-language parity adapts external scanners more defensively, including lowercase grammar-name lookup, so generated COBOL scanner wiring stays aligned with embedded references.
+- Hidden passthrough flattening preserves transitive alternatives without recursing indefinitely, keeping COBOL normalization parity-safe on imported grammars.
+- The COBOL real-corpus lane no longer forces the choice-lifting threshold that was driving deep-parity regressions.
+
+## [0.11.1] - 2026-03-25
+
+### Changed
+- `grammargen` skips conflict diagnostics and provenance on the plain `GenerateLanguage` fast path unless a report or LR splitting actually needs them.
+
+### Fixed
+- Restored CSS real-corpus parity to 25/25 on no-error, sexpr parity, and deep parity.
+- Tightened parser and `grammargen` parity across C/C++, JavaScript/TypeScript/TSX, COBOL, and C# normalization paths.
+- Fixed after-whitespace lex modes, unary reduction collapse, and Python pass-statement normalization regressions called out in the `v0.11.1` release.
+
+## [0.11.0] - 2026-03-24
+
+### Added
+- Grammar subset support with build tags and blob overrides for smaller focused builds.
+- Race-test guards for heavyweight suites so correctness coverage can stay enabled without host OOM pressure.
+
+### Changed
+- Broad-lex fallback in `grammargen` became environment-controlled instead of always-on.
+- Grammar parity coverage expanded again, including explicit-precedence handling in imported grammars.
+
+### Fixed
+- COBOL division and `perform` span normalization.
+- Scala compilation-unit reconstruction and Go trivia-boundary handling in the runtime parser.
+
+## [0.10.1] - 2026-03-19
+
+### Fixed
+- Re-registering a grammar now replaces the existing entry instead of appending a duplicate registration.
+
+## [0.10.0] - 2026-03-18
+
+### Added
+- `grammargen.GenerateLanguageAndBlob` and `GenerateLanguageAndBlobWithContext` for one-pass compiled language plus blob output.
+- Smoke and exhaustive parity modes in `cgo_harness` so required CI stays fast while deeper validation remains available.
+- Pattern-based keyword detection, `ChoiceLiftThreshold`, and broader large-grammar controls in `grammargen`.
+
+### Changed
+- Large-grammar generation now uses wider `StateID` values and additional LALR/LR performance work to stay tractable on bigger grammars.
+
+### Fixed
+- Parity and normalization regressions across CSS, JavaScript/TypeScript/TSX, Python, Haskell, C/C++, Scala, and external-token handling.
+- Immediate-token, after-whitespace lex-mode, and hidden external-token behavior in `grammargen` and the runtime parser.
+
+## [0.9.2] - 2026-03-17
+
+### Added
+- `ExtensionEntry.InheritHighlights` for dynamic grammar highlight inheritance.
+
+## [0.9.1] - 2026-03-17
+
+### Added
+- `grammars.LoadLanguageFromBlob` for loading compiled language blobs directly at runtime.
+
+## [0.9.0] - 2026-03-17
+
+### Added
+- Initial `grammargen` release with grammar composition support and runtime integration work.
+- Split WASM builds for the runtime and `grammargen`, plus browser-side runtime support for client-side highlighting.
+- `RegisterExtension`-era dynamic grammar work, including the LSP proxy and related runtime improvements.
+
+## [0.8.1] - 2026-03-16
+
+### Added
+- Highlight-query inheritance for TypeScript and TSX, fixing the major capture drop in those bundled highlight queries.
+
+## [0.8.0] - 2026-03-16
+
+### Added
+- Structural `grep` engine with metavariables, `where`/`replace` blocks, rewrite support, and integration coverage.
+- Concurrent grammar gateway for walking and parsing files, plus binary-file detection, cancellation guards, and progress reporting.
+- Walk-and-parse integration tests, docs, and metadata-only `AllLanguages` enumeration.
+
+## [0.7.4] - 2026-03-16
+
+### Fixed
+- Reordered the JSON highlight query so object keys win the intended highlight priority.
 
 ## [0.7.3] - 2026-03-16
 
@@ -123,6 +212,18 @@ for tags and release notes while still in `0.x`.
 - Initial standalone pure-Go runtime module.
 - External scanner VM foundation and base parser/lexer/tree infrastructure.
 
+[0.11.2]: https://github.com/odvcencio/gotreesitter/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/odvcencio/gotreesitter/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/odvcencio/gotreesitter/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/odvcencio/gotreesitter/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/odvcencio/gotreesitter/compare/v0.9.2...v0.10.0
+[0.9.2]: https://github.com/odvcencio/gotreesitter/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/odvcencio/gotreesitter/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/odvcencio/gotreesitter/compare/v0.8.1...v0.9.0
+[0.8.1]: https://github.com/odvcencio/gotreesitter/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/odvcencio/gotreesitter/compare/v0.7.4...v0.8.0
+[0.7.4]: https://github.com/odvcencio/gotreesitter/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/odvcencio/gotreesitter/compare/v0.7.0...v0.7.3
 [0.7.0]: https://github.com/odvcencio/gotreesitter/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/odvcencio/gotreesitter/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/odvcencio/gotreesitter/compare/v0.5.1...v0.5.2
