@@ -3,6 +3,7 @@ package grammargen
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -314,15 +315,29 @@ func (b *nfaBuilder) buildSeq(children []*Rule) (nfaFragment, error) {
 	if len(children) == 0 {
 		return b.buildEpsilon(), nil
 	}
-	first, err := b.buildFromRule(children[0])
-	if err != nil {
-		return nfaFragment{}, err
-	}
-	cur := first
-	for _, c := range children[1:] {
-		next, err := b.buildFromRule(c)
-		if err != nil {
-			return nfaFragment{}, err
+	var cur nfaFragment
+	initialized := false
+	for i := 0; i < len(children); {
+		var next nfaFragment
+		if children[i] != nil && children[i].Kind == RuleString {
+			var sb strings.Builder
+			for i < len(children) && children[i] != nil && children[i].Kind == RuleString {
+				sb.WriteString(children[i].Value)
+				i++
+			}
+			next = b.buildString(sb.String())
+		} else {
+			frag, err := b.buildFromRule(children[i])
+			if err != nil {
+				return nfaFragment{}, err
+			}
+			next = frag
+			i++
+		}
+		if !initialized {
+			cur = next
+			initialized = true
+			continue
 		}
 		b.addEpsilon(cur.end, next.start)
 		cur = nfaFragment{cur.start, next.end}
