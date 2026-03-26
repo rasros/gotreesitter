@@ -831,42 +831,37 @@ func normalizeYAMLRecoveredRoot(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "yaml" || len(root.children) == 0 {
 		return
 	}
-	if root.Type(lang) == "stream" && yamlRootLooksCanonical(root, lang) {
-		return
-	}
 	if root.Type(lang) != "stream" && root.Type(lang) != "ERROR" {
 		return
 	}
+	if !yamlRootLooksCanonical(root, lang) {
+		flat := yamlFlattenRecoveredRootChildren(root.children, lang)
+		if len(flat) != 0 {
+			leadingComments := 0
+			for leadingComments < len(flat) && flat[leadingComments] != nil && flat[leadingComments].Type(lang) == "comment" {
+				leadingComments++
+			}
+			doc := yamlBuildRecoveredSingleDocument(flat[leadingComments:], root.endByte, root.endPoint, root.ownerArena, lang)
+			if doc != nil {
+				streamSym, ok := symbolByName(lang, "stream")
+				if ok {
+					streamChildren := make([]*Node, 0, leadingComments+1)
+					streamChildren = append(streamChildren, flat[:leadingComments]...)
+					streamChildren = append(streamChildren, doc)
 
-	flat := yamlFlattenRecoveredRootChildren(root.children, lang)
-	if len(flat) == 0 {
-		return
+					root.symbol = streamSym
+					root.isNamed = lang.SymbolMetadata[streamSym].Named
+					root.children = cloneNodeSliceInArena(root.ownerArena, streamChildren)
+					root.fieldIDs = nil
+					root.fieldSources = nil
+					root.hasError = false
+					populateParentNode(root, root.children)
+				}
+			}
+		}
 	}
-
-	leadingComments := 0
-	for leadingComments < len(flat) && flat[leadingComments] != nil && flat[leadingComments].Type(lang) == "comment" {
-		leadingComments++
-	}
-	doc := yamlBuildRecoveredSingleDocument(flat[leadingComments:], root.endByte, root.endPoint, root.ownerArena, lang)
-	if doc == nil {
-		return
-	}
-
-	streamSym, ok := symbolByName(lang, "stream")
-	if !ok {
-		return
-	}
-	streamChildren := make([]*Node, 0, leadingComments+1)
-	streamChildren = append(streamChildren, flat[:leadingComments]...)
-	streamChildren = append(streamChildren, doc)
-
-	root.symbol = streamSym
-	root.isNamed = lang.SymbolMetadata[streamSym].Named
-	root.children = cloneNodeSliceInArena(root.ownerArena, streamChildren)
-	root.fieldIDs = nil
-	root.fieldSources = nil
-	root.hasError = false
-	populateParentNode(root, root.children)
+	yamlNormalizeRecoveredSubtrees(root, lang)
+	yamlExtendExplicitDocumentRangesToLeadingComments(root, lang)
 	root.startByte = 0
 	root.startPoint = Point{}
 	root.endByte = uint32(len(source))
@@ -892,35 +887,7 @@ func yamlRootLooksCanonical(root *Node, lang *Language) bool {
 }
 
 func yamlFlattenRecoveredRootChildren(children []*Node, lang *Language) []*Node {
-	flat := make([]*Node, 0, len(children))
-	for _, child := range children {
-		if child == nil {
-			continue
-		}
-		switch child.Type(lang) {
-		case "_bl":
-			continue
-		case "_r_prp":
-			if len(child.children) == 1 && child.children[0] != nil {
-				flat = append(flat, child.children[0])
-			}
-		case "ERROR":
-			if len(child.children) == 1 && child.children[0] != nil {
-				grandchild := child.children[0]
-				if grandchild.Type(lang) == "---" || grandchild.Type(lang) == "..." || grandchild.Type(lang) == ">" || grandchild.Type(lang) == "|" {
-					flat = append(flat, grandchild)
-					continue
-				}
-			}
-			flat = append(flat, child)
-		default:
-			if strings.HasPrefix(child.Type(lang), "_r_blk_str_repeat") {
-				continue
-			}
-			flat = append(flat, child)
-		}
-	}
-	return flat
+	return yamlFlattenRecoverableNodes(children, lang)
 }
 
 func yamlBuildRecoveredSingleDocument(nodes []*Node, endByte uint32, endPoint Point, arena *nodeArena, lang *Language) *Node {
@@ -999,7 +966,7 @@ decoratorsDone:
 		if !ok {
 			return nil
 		}
-		core = newParentNodeInArena(arena, blockScalarSym, lang.SymbolMetadata[blockScalarSym].Named, []*Node{first}, nil, 0)
+		core = newParentNodeInArena(arena, blockScalarSym, lang.SymbolMetadata[blockScalarSym].Named, bodyNodes, nil, 0)
 		core.endByte = endByte
 		core.endPoint = endPoint
 		core.hasError = false
@@ -1085,6 +1052,248 @@ func yamlWrapPlainScalarFlowNodes(node *Node, lang *Language) {
 	node.fieldSources = nil
 	node.hasError = false
 	populateParentNode(node, node.children)
+}
+
+func yamlNormalizeRecoveredSubtrees(node *Node, lang *Language) {
+	if node == nil || lang == nil {
+		return
+	}
+	for _, child := range node.children {
+		yamlNormalizeRecoveredSubtrees(child, lang)
+	}
+	switch node.Type(lang) {
+	case "block_mapping":
+		yamlNormalizeYAMLCollectionNode(node, "block_mapping_pair", lang)
+	case "block_sequence":
+		yamlNormalizeYAMLCollectionNode(node, "block_sequence_item", lang)
+	case "block_node":
+		yamlNormalizeYAMLBlockNode(node, lang)
+	case "flow_node":
+		yamlNormalizeYAMLFlowNode(node, lang)
+	}
+}
+
+func yamlNormalizeYAMLCollectionNode(node *Node, itemType string, lang *Language) {
+	if node == nil || lang == nil || !yamlChildrenNeedRecovery(node.children, lang) {
+		return
+	}
+	flat := yamlFlattenRecoverableNodes(node.children, lang)
+	if len(flat) == 0 {
+		return
+	}
+	filtered := make([]*Node, 0, len(flat))
+	for _, child := range flat {
+		if child == nil {
+			continue
+		}
+		switch child.Type(lang) {
+		case itemType, "comment":
+			filtered = append(filtered, child)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	node.children = cloneNodeSliceInArena(node.ownerArena, filtered)
+	node.fieldIDs = nil
+	node.fieldSources = nil
+	node.hasError = false
+	populateParentNode(node, node.children)
+}
+
+func yamlNormalizeYAMLBlockNode(node *Node, lang *Language) {
+	if node == nil || lang == nil {
+		return
+	}
+	flat := yamlFlattenRecoverableNodes(node.children, lang)
+	if len(flat) == 0 {
+		return
+	}
+	needsRecovery := yamlChildrenNeedRecovery(node.children, lang)
+	if !needsRecovery {
+		for _, child := range flat {
+			if child == nil {
+				continue
+			}
+			switch child.Type(lang) {
+			case "block_mapping_pair", "block_sequence_item", ">", "|":
+				needsRecovery = true
+			}
+			if needsRecovery {
+				break
+			}
+		}
+	}
+	if !needsRecovery {
+		return
+	}
+	recovered := yamlBuildRecoveredDocumentBody(flat, node.endByte, node.endPoint, node.ownerArena, lang)
+	if recovered == nil {
+		return
+	}
+	if recovered.Type(lang) == "block_node" {
+		*node = *recovered
+		return
+	}
+	switch recovered.Type(lang) {
+	case "block_mapping", "block_sequence", "block_scalar":
+		node.children = cloneNodeSliceInArena(node.ownerArena, []*Node{recovered})
+		node.fieldIDs = nil
+		node.fieldSources = nil
+		node.hasError = false
+		populateParentNode(node, node.children)
+	}
+}
+
+func yamlNormalizeYAMLFlowNode(node *Node, lang *Language) {
+	if node == nil || lang == nil {
+		return
+	}
+	yamlWrapPlainScalarFlowNodes(node, lang)
+	flat := yamlFlattenRecoverableNodes(node.children, lang)
+	if len(flat) == 0 {
+		return
+	}
+	needsRecovery := yamlChildrenNeedRecovery(node.children, lang)
+	if !needsRecovery {
+		for _, child := range flat {
+			if child != nil && child.Type(lang) == "flow_pair" {
+				needsRecovery = true
+				break
+			}
+		}
+	}
+	if !needsRecovery {
+		return
+	}
+	decoratorsEnd := 0
+	for decoratorsEnd < len(flat) {
+		switch flat[decoratorsEnd].Type(lang) {
+		case "tag", "anchor", "alias":
+			decoratorsEnd++
+		default:
+			goto decoratorsDone
+		}
+	}
+decoratorsDone:
+	bodyNodes := flat[decoratorsEnd:]
+	if len(bodyNodes) == 0 {
+		return
+	}
+	var core *Node
+	if yamlSliceContainsType(bodyNodes, "flow_pair", lang) {
+		core = yamlWrapYAMLCollection("flow_mapping", bodyNodes, node.endByte, node.endPoint, node.ownerArena, lang)
+	} else {
+		first := yamlFirstNonComment(bodyNodes, lang)
+		if first == nil {
+			return
+		}
+		switch first.Type(lang) {
+		case "flow_mapping", "flow_sequence":
+			core = first
+		default:
+			return
+		}
+	}
+	children := make([]*Node, 0, decoratorsEnd+1)
+	children = append(children, flat[:decoratorsEnd]...)
+	children = append(children, core)
+	node.children = cloneNodeSliceInArena(node.ownerArena, children)
+	node.fieldIDs = nil
+	node.fieldSources = nil
+	node.hasError = false
+	populateParentNode(node, node.children)
+}
+
+func yamlChildrenNeedRecovery(children []*Node, lang *Language) bool {
+	for _, child := range children {
+		if child == nil {
+			continue
+		}
+		if child.IsError() || strings.HasPrefix(child.Type(lang), "_") {
+			return true
+		}
+	}
+	return false
+}
+
+func yamlFlattenRecoverableNodes(children []*Node, lang *Language) []*Node {
+	flat := make([]*Node, 0, len(children))
+	var appendNode func(*Node)
+	appendNode = func(node *Node) {
+		if node == nil {
+			return
+		}
+		typ := node.Type(lang)
+		switch {
+		case typ == "_bl":
+			return
+		case strings.HasPrefix(typ, "_r_blk_str_repeat"):
+			return
+		case node.IsError():
+			for _, child := range node.children {
+				appendNode(child)
+			}
+		case strings.HasPrefix(typ, "_"):
+			for _, child := range node.children {
+				appendNode(child)
+			}
+		default:
+			flat = append(flat, node)
+		}
+	}
+	for _, child := range children {
+		appendNode(child)
+	}
+	return flat
+}
+
+func yamlExtendExplicitDocumentRangesToLeadingComments(root *Node, lang *Language) {
+	if root == nil || lang == nil || root.Type(lang) != "stream" {
+		return
+	}
+	var firstLeadingComment *Node
+	for _, child := range root.children {
+		if child == nil {
+			continue
+		}
+		if child.Type(lang) == "comment" {
+			if firstLeadingComment == nil {
+				firstLeadingComment = child
+			}
+			continue
+		}
+		if child.Type(lang) == "document" && firstLeadingComment != nil && yamlDocumentHasExplicitStart(child, lang) {
+			child.startByte = firstLeadingComment.startByte
+			child.startPoint = firstLeadingComment.startPoint
+		}
+		firstLeadingComment = nil
+	}
+}
+
+func yamlDocumentHasExplicitStart(node *Node, lang *Language) bool {
+	if node == nil || lang == nil || node.Type(lang) != "document" {
+		return false
+	}
+	for _, child := range node.children {
+		if child == nil {
+			continue
+		}
+		switch child.Type(lang) {
+		case "tag_directive", "yaml_directive", "reserved_directive", "---":
+			return true
+		}
+	}
+	return false
+}
+
+func yamlSliceContainsType(nodes []*Node, want string, lang *Language) bool {
+	for _, node := range nodes {
+		if node != nil && node.Type(lang) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func yamlFirstNonComment(nodes []*Node, lang *Language) *Node {

@@ -36,6 +36,62 @@ func TestYAMLFoldedBlockScalarParity(t *testing.T) {
 	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
 }
 
+func TestYAMLNestedSequenceMappingParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "american:\n" +
+		"  - Boston Red Sox\n" +
+		"  - Detroit Tigers\n" +
+		"  - New York Yankees\n" +
+		"national:\n" +
+		"  - New York Mets\n" +
+		"  - Chicago Cubs\n" +
+		"  - Atlanta Braves\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
+func TestYAMLSequenceOfMappingsParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "-\n" +
+		"  name: Mark McGwire\n" +
+		"  hr:   65\n" +
+		"  avg:  0.278\n" +
+		"-\n" +
+		"  name: Sammy Sosa\n" +
+		"  hr:   63\n" +
+		"  avg:  0.288\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
+func TestYAMLExplicitKeyBlockScalarParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "? explicit key # Empty value\n" +
+		"\n" +
+		"? |\n" +
+		"  block key\n" +
+		"\n" +
+		": - one # Explicit compact\n" +
+		"  - two # block value\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
+func TestYAMLFlowMappingParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "point: { x: 89, y: 102 }\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
+func TestYAMLExplicitDocumentCommentRangeParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "# Ordered maps are represented as\n" +
+		"# A sequence of mappings, with\n" +
+		"# each mapping having one key\n" +
+		"--- !!omap\n" +
+		"- Mark McGwire: 65\n" +
+		"- Sammy Sosa: 63\n" +
+		"- Ken Griffy: 58\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
 func loadGeneratedYAMLLanguagesForParity(t *testing.T) (*gotreesitter.Language, *gotreesitter.Language) {
 	t.Helper()
 
