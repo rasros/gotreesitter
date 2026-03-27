@@ -6,8 +6,13 @@ import (
 	"unicode/utf8"
 )
 
+const (
+	csharpMaxTopLevelChunkRecoverySourceBytes = 4096
+	csharpMaxTopLevelChunkRecoverySpans       = 128
+)
+
 func normalizeCSharpRecoveredTopLevelChunks(root *Node, source []byte, p *Parser) {
-	if root == nil || p == nil || p.language == nil || p.language.Name != "c_sharp" || len(source) == 0 || root.ownerArena == nil {
+	if root == nil || p == nil || p.language == nil || p.language.Name != "c_sharp" || p.skipRecoveryReparse || len(source) == 0 || root.ownerArena == nil {
 		return
 	}
 	rootType := root.Type(p.language)
@@ -42,11 +47,11 @@ func normalizeCSharpRecoveredTopLevelChunks(root *Node, source []byte, p *Parser
 }
 
 func csharpRecoverTopLevelChunks(source []byte, p *Parser, arena *nodeArena) ([]*Node, bool) {
-	if p == nil || p.language == nil || len(source) == 0 {
+	if p == nil || p.language == nil || len(source) == 0 || len(source) > csharpMaxTopLevelChunkRecoverySourceBytes {
 		return nil, false
 	}
 	spans := csharpTopLevelChunkSpans(source)
-	if len(spans) == 0 {
+	if len(spans) == 0 || len(spans) > csharpMaxTopLevelChunkRecoverySpans {
 		return nil, false
 	}
 	out := make([]*Node, 0, len(spans))

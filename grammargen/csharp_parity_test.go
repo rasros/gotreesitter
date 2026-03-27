@@ -165,6 +165,52 @@ func TestCSharpSourceFileStructureParity(t *testing.T) {
 	}
 }
 
+func TestCSharpTopLevelChunkParity(t *testing.T) {
+	genLang := loadGeneratedCSharpLanguageForParity(t)
+	refLang := grammars.CSharpLanguage()
+	adaptExternalScanner(refLang, genLang)
+
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "extern_usings_namespace",
+			src: "extern alias A;\n" +
+				"// alias comment\n" +
+				"using System;\n" +
+				"// using comment\n" +
+				"using static System.Console;\n" +
+				"namespace Foo {\n" +
+				"  using A;\n" +
+				"}\n",
+		},
+		{
+			name: "multiple_top_level_classes",
+			src: "public class F {}\n" +
+				"public class G<T> where T:struct {}\n" +
+				"file class A {}\n" +
+				"public class NoBody;\n",
+		},
+		{
+			name: "globals_then_class",
+			src: "(string a, bool b) c = default;\n" +
+				"A<B> a = null;\n" +
+				"class A {\n" +
+				"  int Sample() {\n" +
+				"    return 1;\n" +
+				"  }\n" +
+				"}\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertGeneratedAndReferenceDeepParity(t, genLang, refLang, tc.src)
+		})
+	}
+}
+
 func TestCSharpUnicodeIdentifierParity(t *testing.T) {
 	genLang := loadGeneratedCSharpLanguageForParity(t)
 	refLang := grammars.CSharpLanguage()
