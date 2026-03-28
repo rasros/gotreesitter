@@ -1,6 +1,10 @@
 package grammars
 
-import "testing"
+import (
+	"testing"
+
+	gotreesitter "github.com/odvcencio/gotreesitter"
+)
 
 func TestLookupExternalScanner(t *testing.T) {
 	// Registered scanners should be found.
@@ -37,14 +41,15 @@ func TestAdaptScannerForLanguageNilTarget(t *testing.T) {
 
 func TestAdaptScannerForLanguagePreservesExistingExternalLexStates(t *testing.T) {
 	ref := YamlLanguage()
-	target := *ref
-	target.ExternalScanner = nil
-	target.ExternalLexStates = [][]bool{
+	target := &gotreesitter.Language{
+		ExternalSymbols: append([]gotreesitter.Symbol(nil), ref.ExternalSymbols...),
+		ExternalLexStates: [][]bool{
 		{false, false},
 		{true, false},
+		},
 	}
 
-	if !AdaptScannerForLanguage("yaml", &target) {
+	if !AdaptScannerForLanguage("yaml", target) {
 		t.Fatal("AdaptScannerForLanguage(yaml) returned false")
 	}
 	if target.ExternalScanner == nil {

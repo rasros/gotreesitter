@@ -475,13 +475,13 @@ Test suite covers: smoke tests (206 grammars), golden S-expression snapshots, hi
 
 ## Roadmap
 
-v0.7.x — 206 grammars (all OK), 116 external scanners, GLR parser, incremental reparsing with external scanner checkpoints, query engine, tree cursor, highlighting, tagging, ABI 15 support, injection parser, typed query codegen, CST rewriter, parser pool, arena memory budgets, and structural parity against 100+ curated C reference grammars.
+v0.12.x — 206 grammars (all OK), 116 external scanners, pure-Go runtime plus `grammargen`, ABI 15 support including reserved-word sets, GLR parser, incremental reparsing with external scanner checkpoints, query engine, tree cursor, highlighting, tagging, injection parser, typed query codegen, CST rewriter, parser pool, arena memory budgets, and structural parity against 100+ curated C reference grammars.
 
 Next:
-- Pure-Go grammar compiler (grammargen) — eliminate dependency on upstream `parser.c` files
-- TypeScript full-corpus parity
-- Python incremental parsing with fine-grained indent checkpoint validation
-- Table-based DFA C codegen for grammargen (compact output for Unicode-heavy grammars)
+- Full-parse `grammargen` performance work that keeps the recent incremental wins without regressing the main DFA benchmark
+- C# parser-result merge cleanup and the remaining recovery/parity backlog on top-level chunks, attributes, and type bodies
+- The next highest-value parser/`grammargen` parity language after YAML and C# stabilization
+- Table-size and codegen compaction work for Unicode-heavy grammars
 
 Release history and retroactive notes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
