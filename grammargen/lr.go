@@ -847,6 +847,8 @@ type lrContext struct {
 	gotoAdvancedScratch    []coreEntry
 	lr0KernelScratch       []coreItem
 	lr0ClosureScratch      []lr0CoreEntry
+	lr0RetainedChunks      [][]lr0CoreEntry
+	lr0RetainedChunkUsed   int
 	lr0SymbolBucketIdx     []int
 	lr0SymbolBucketCount   []int
 	lr0SymbolBucketOffset  []int
@@ -990,6 +992,8 @@ func (ctx *lrContext) releaseScratch() {
 	ctx.gotoAdvancedScratch = nil
 	ctx.lr0KernelScratch = nil
 	ctx.lr0ClosureScratch = nil
+	ctx.lr0RetainedChunks = nil
+	ctx.lr0RetainedChunkUsed = 0
 	ctx.lr0SymbolBucketIdx = nil
 	ctx.lr0SymbolBucketCount = nil
 	ctx.lr0SymbolBucketOffset = nil
@@ -1052,6 +1056,37 @@ func (ctx *lrContext) ensureLR0RepeatSourceCapacity(size int) {
 		return
 	}
 	ctx.lr0RepeatSourceGen = append(ctx.lr0RepeatSourceGen, make([]uint32, size-len(ctx.lr0RepeatSourceGen))...)
+}
+
+const defaultLR0RetainedChunkEntries = 1 << 20
+
+func (ctx *lrContext) retainLR0Cores(cores []lr0CoreEntry) []lr0CoreEntry {
+	if len(cores) == 0 {
+		return nil
+	}
+	if len(ctx.lr0RetainedChunks) == 0 {
+		chunkCap := defaultLR0RetainedChunkEntries
+		if len(cores) > chunkCap {
+			chunkCap = len(cores)
+		}
+		ctx.lr0RetainedChunks = append(ctx.lr0RetainedChunks, make([]lr0CoreEntry, chunkCap))
+		ctx.lr0RetainedChunkUsed = 0
+	}
+	chunk := ctx.lr0RetainedChunks[len(ctx.lr0RetainedChunks)-1]
+	if len(chunk)-ctx.lr0RetainedChunkUsed < len(cores) {
+		chunkCap := defaultLR0RetainedChunkEntries
+		if len(cores) > chunkCap {
+			chunkCap = len(cores)
+		}
+		chunk = make([]lr0CoreEntry, chunkCap)
+		ctx.lr0RetainedChunks = append(ctx.lr0RetainedChunks, chunk)
+		ctx.lr0RetainedChunkUsed = 0
+	}
+	start := ctx.lr0RetainedChunkUsed
+	end := start + len(cores)
+	copy(chunk[start:end], cores)
+	ctx.lr0RetainedChunkUsed = end
+	return chunk[start:end:end]
 }
 
 func (ctx *lrContext) ensureTransitionState(state int) {

@@ -420,8 +420,7 @@ func (ctx *lrContext) retainLR0ItemSet(set lr0ItemSet) lr0ItemSet {
 		ctx.lr0ClosureScratch = set.cores[:0]
 		return set
 	}
-	tight := make([]lr0CoreEntry, len(set.cores))
-	copy(tight, set.cores)
+	tight := ctx.retainLR0Cores(set.cores)
 	ctx.lr0ClosureScratch = set.cores[:0]
 	set.cores = tight
 	return set
