@@ -354,9 +354,9 @@ func (n *Node) SExpr(lang *Language) string {
 // sexprWrite writes the S-expression for n into b, returning true if anything
 // was written. Using a shared builder avoids the per-node string allocation and
 // the intermediate []string slice that the previous implementation required.
-func sexprWrite(n *Node, lang *Language, b *strings.Builder) bool {
+func sexprWrite(n *Node, lang *Language, b *strings.Builder) {
 	if n == nil || !n.IsNamed() {
-		return false
+		return
 	}
 	name := n.Type(lang)
 	b.WriteByte('(')
@@ -366,15 +366,13 @@ func sexprWrite(n *Node, lang *Language, b *strings.Builder) bool {
 	// produces at least "(type)", we can write a space before each one eagerly.
 	for i := 0; i < n.ChildCount(); i++ {
 		child := n.Child(i)
-		if child == nil || !child.IsNamed() {
-			continue
+		if child != nil && child.IsNamed() {
+			b.WriteByte(' ')
+			sexprWrite(child, lang, b)
 		}
-		b.WriteByte(' ')
-		sexprWrite(child, lang, b)
 	}
 
 	b.WriteByte(')')
-	return true
 }
 
 // Text returns the source text covered by this node.
