@@ -68,7 +68,10 @@ func buildLexDFA(ctx context.Context, patterns []TerminalPattern, extraSymbols [
 		// ones when both accept in the same DFA state.
 		dfa, err := subsetConstruction(ctx, combined, immediateSyms)
 		if err != nil {
-			return nil, nil, fmt.Errorf("lex mode %d: %w", mi, err)
+			return nil, nil, fmt.Errorf(
+				"lex mode %d (patterns=%d valid_symbols=%d nfa_states=%d skip_ws=%v): %w",
+				mi, len(modePatterns), len(mode.validSymbols), len(combined.states), mode.skipWhitespace, err,
+			)
 		}
 
 		if len(immediateSyms) > 0 {
@@ -317,6 +320,23 @@ type dfaStateHashEntry struct {
 	next     *dfaStateHashEntry
 }
 
+type closureCacheEntry struct {
+	targets []int
+	closure []int
+	next    *closureCacheEntry
+}
+
+type nfaRangeMove struct {
+	lo, hi  rune
+	targets []int
+}
+
+type nfaSweepEvent struct {
+	point     rune
+	nextState int
+	delta     int
+}
+
 // dfaSubsetScratch owns reusable buffers for one NFA→DFA subset construction.
 // It lets us probe candidate closures without allocating fresh maps/slices on
 // every range transition; new backing storage is only retained for novel DFA
@@ -408,6 +428,7 @@ func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaSt
 	startClosure := scratch.epsilonClosure(n, []int{n.start})
 
 	stateMap := make(map[uint64]*dfaStateHashEntry) // closure hash → DFA state index chain
+	closureCache := make(map[uint64]*closureCacheEntry)
 	var stateSets [][]int
 	var dfaStates []dfaState
 	var worklist []dfaStateWorkItem
@@ -446,6 +467,22 @@ func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaSt
 		return id
 	}
 
+	closureForTargets := func(targets []int) []int {
+		hash := hashIntSlice(targets)
+		for entry := closureCache[hash]; entry != nil; entry = entry.next {
+			if sameIntSlice(entry.targets, targets) {
+				return entry.closure
+			}
+		}
+		closure := append([]int(nil), scratch.epsilonClosure(n, targets)...)
+		closureCache[hash] = &closureCacheEntry{
+			targets: append([]int(nil), targets...),
+			closure: closure,
+			next:    closureCache[hash],
+		}
+		return closure
+	}
+
 	addState(startClosure)
 
 	worklistIter := 0
@@ -464,19 +501,16 @@ func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaSt
 			}
 		}
 
-		// Collect all character ranges from transitions of current NFA states.
-		ranges := collectTransitionRanges(n, current.states)
-		if len(ranges) > 0 {
-			dfaStates[curID].transitions = make([]dfaTransition, 0, len(ranges))
+		// Partition character space once and carry direct target sets forward so
+		// subset construction does not rescan all NFA transitions for every range.
+		moves := collectTransitionMoves(n, current.states)
+		if len(moves) > 0 {
+			dfaStates[curID].transitions = make([]dfaTransition, 0, len(moves))
 		}
 
-		// For each character range, compute the target NFA state set.
-		for _, r := range ranges {
-			targetStates := scratch.collectMoveTargets(n, current.states, r.lo, r.hi)
-			if len(targetStates) == 0 {
-				continue
-			}
-			targetStates = scratch.epsilonClosure(n, targetStates)
+		// For each character range, epsilon-close the direct target set.
+		for _, move := range moves {
+			targetStates := closureForTargets(move.targets)
 			if len(targetStates) == 0 {
 				continue
 			}
@@ -484,14 +518,14 @@ func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaSt
 			transitions := dfaStates[curID].transitions
 			if n := len(transitions); n > 0 {
 				last := &transitions[n-1]
-				if last.nextState == targetID && last.hi+1 == r.lo {
-					last.hi = r.hi
+				if last.nextState == targetID && last.hi+1 == move.lo {
+					last.hi = move.hi
 					dfaStates[curID].transitions = transitions
 					continue
 				}
 			}
 			dfaStates[curID].transitions = append(transitions,
-				dfaTransition{lo: r.lo, hi: r.hi, nextState: targetID})
+				dfaTransition{lo: move.lo, hi: move.hi, nextState: targetID})
 		}
 	}
 
@@ -613,6 +647,82 @@ func collectTransitionRanges(n *nfa, states []int) []runeRange {
 	}
 
 	return ranges
+}
+
+// collectTransitionMoves partitions the current NFA frontier into
+// non-overlapping character ranges and records the direct move targets for each
+// range in a single sweep. This avoids rescanning all NFA transitions first to
+// test coverage and then again to recover the same target set.
+func collectTransitionMoves(n *nfa, states []int) []nfaRangeMove {
+	transitionCount := 0
+	for _, s := range states {
+		for _, t := range n.states[s].transitions {
+			if !t.epsilon {
+				transitionCount++
+			}
+		}
+	}
+	if transitionCount == 0 {
+		return nil
+	}
+
+	events := make([]nfaSweepEvent, 0, transitionCount*2)
+	for _, s := range states {
+		for _, t := range n.states[s].transitions {
+			if t.epsilon {
+				continue
+			}
+			events = append(events,
+				nfaSweepEvent{point: t.lo, nextState: t.nextState, delta: 1},
+				nfaSweepEvent{point: t.hi + 1, nextState: t.nextState, delta: -1},
+			)
+		}
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].point != events[j].point {
+			return events[i].point < events[j].point
+		}
+		if events[i].nextState != events[j].nextState {
+			return events[i].nextState < events[j].nextState
+		}
+		return events[i].delta < events[j].delta
+	})
+
+	active := make(map[int]int)
+	moves := make([]nfaRangeMove, 0, len(events))
+	for i := 0; i < len(events); {
+		point := events[i].point
+		for i < len(events) && events[i].point == point {
+			ev := events[i]
+			active[ev.nextState] += ev.delta
+			if active[ev.nextState] == 0 {
+				delete(active, ev.nextState)
+			}
+			i++
+		}
+		if len(active) == 0 || i >= len(events) {
+			continue
+		}
+		hi := events[i].point - 1
+		if point > hi {
+			continue
+		}
+		targets := make([]int, 0, len(active))
+		for nextState := range active {
+			targets = append(targets, nextState)
+		}
+		sort.Ints(targets)
+		if n := len(moves); n > 0 {
+			last := &moves[n-1]
+			if last.hi+1 == point && sameIntSlice(last.targets, targets) {
+				last.hi = hi
+				continue
+			}
+		}
+		moves = append(moves, nfaRangeMove{lo: point, hi: hi, targets: targets})
+	}
+
+	return moves
 }
 
 // mergeAdjacentRanges merges adjacent ranges that lead to the same target state set.
@@ -1039,7 +1149,11 @@ func computeLexModes(
 		}
 		if followTokens != nil {
 			for _, sym := range followTokens(state) {
-				if sym > 0 && sym < tokenCount && !extSet[sym] {
+				// Reduce-follow expansion exists to admit the word token in
+				// states where a keyword becomes valid only after reducing a
+				// preceding nonterminal. Widening lex modes with every follow
+				// terminal is both unnecessary and expensive for large grammars.
+				if sym > 0 && sym < tokenCount && !extSet[sym] && keywordSymbols[sym] {
 					directValid[sym] = true
 				}
 			}

@@ -36,3 +36,37 @@ func TestBuildLexDFAPrefersLongerStringOverSingleCharPattern(t *testing.T) {
 		t.Fatalf("token end = %d, want %d", got, want)
 	}
 }
+
+func TestCollectTransitionMovesMatchesLegacyRanges(t *testing.T) {
+	n := &nfa{
+		states: []nfaState{
+			{transitions: []nfaTransition{
+				{lo: 'a', hi: 'f', nextState: 1},
+				{lo: 'd', hi: 'h', nextState: 2},
+			}},
+			{transitions: []nfaTransition{
+				{lo: 'b', hi: 'e', nextState: 3},
+			}},
+			{},
+			{},
+		},
+		start: 0,
+	}
+
+	states := []int{0, 1}
+	legacyRanges := collectTransitionRanges(n, states)
+	moves := collectTransitionMoves(n, states)
+	if len(moves) != len(legacyRanges) {
+		t.Fatalf("len(moves) = %d, want %d", len(moves), len(legacyRanges))
+	}
+
+	for i, move := range moves {
+		if move.lo != legacyRanges[i].lo || move.hi != legacyRanges[i].hi {
+			t.Fatalf("move[%d] range = [%q,%q], want [%q,%q]", i, move.lo, move.hi, legacyRanges[i].lo, legacyRanges[i].hi)
+		}
+		want := moveTargets(n, states, legacyRanges[i].lo, legacyRanges[i].hi)
+		if !sameIntSlice(move.targets, want) {
+			t.Fatalf("move[%d] targets = %v, want %v", i, move.targets, want)
+		}
+	}
+}

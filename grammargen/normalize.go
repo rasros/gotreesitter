@@ -124,6 +124,12 @@ type symbolTable struct {
 	choiceLiftThreshold int  // if >0, lift inline CHOICE nodes exceeding this width
 }
 
+const inlinePatternSymbolPrefix = "\x00inline_pattern:"
+
+func inlinePatternSymbolKey(pattern string) string {
+	return inlinePatternSymbolPrefix + pattern
+}
+
 func newSymbolTable() *symbolTable {
 	st := &symbolTable{
 		byName:           make(map[string]int),
@@ -290,11 +296,11 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	// expected path.
 	aliasedPatterns := collectAliasedPatterns(g)
 	for _, pat := range inlinePatterns {
-		name := pat // use pattern value as key for lookup
+		name := inlinePatternSymbolKey(pat)
 		if _, ok := st.lookup(name); ok {
 			continue // already registered
 		}
-		displayName := name
+		displayName := pat
 		visible := false
 		named := false
 		if ai, ok := aliasedPatterns[pat]; ok {
@@ -1919,7 +1925,7 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 	// Inline patterns (regex appearing directly in non-terminal rules, not in token()).
 	// These have no explicit prec, so priority is 0.
 	for _, pat := range inlinePatterns {
-		id, ok := st.lookup(pat)
+		id, ok := st.lookup(inlinePatternSymbolKey(pat))
 		if !ok {
 			continue
 		}
@@ -2156,7 +2162,94 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string, namedTok
 		}
 	}
 
+	// Named token rules that expand to a finite set of identifier-like string
+	// literals can also ride the keyword DFA path. This captures visible tokens
+	// like C#'s predefined_type = token(choice("int", "string", ...)).
+	for _, name := range namedTokens {
+		if name == g.Word {
+			continue
+		}
+		rule := g.Rules[name]
+		if rule == nil {
+			continue
+		}
+		id, ok := st.lookupNamedToken(name)
+		if !ok {
+			if id2, ok2 := st.lookup(name); ok2 {
+				id = id2
+			} else {
+				continue
+			}
+		}
+		if keywordSet[id] {
+			continue
+		}
+		expanded, _, _, err := expandTokenRule(rule)
+		if err != nil || !isStringOnlyRule(expanded) {
+			continue
+		}
+		lits, ok := collectStringOnlyRuleLiterals(expanded)
+		if !ok || len(lits) == 0 {
+			continue
+		}
+		allKeyword := true
+		for _, lit := range lits {
+			if !matchesDFA(wordDFA, lit) || !isIdentifierLikeKeywordLiteral(lit) {
+				allKeyword = false
+				break
+			}
+		}
+		if !allKeyword {
+			continue
+		}
+		keywordSet[id] = true
+		keywordSyms = append(keywordSyms, id)
+		keywordEntries = append(keywordEntries, TerminalPattern{
+			SymbolID: id,
+			Rule:     expanded,
+			Priority: 0,
+		})
+	}
+
 	return keywordSet, keywordSyms, keywordEntries
+}
+
+func collectStringOnlyRuleLiterals(r *Rule) ([]string, bool) {
+	if r == nil {
+		return nil, false
+	}
+	switch r.Kind {
+	case RuleString:
+		return []string{r.Value}, true
+	case RuleSeq:
+		out := []string{""}
+		for _, child := range r.Children {
+			childLits, ok := collectStringOnlyRuleLiterals(child)
+			if !ok {
+				return nil, false
+			}
+			next := make([]string, 0, len(out)*len(childLits))
+			for _, prefix := range out {
+				for _, lit := range childLits {
+					next = append(next, prefix+lit)
+				}
+			}
+			out = next
+		}
+		return out, len(out) > 0
+	case RuleChoice:
+		out := make([]string, 0, len(r.Children))
+		for _, child := range r.Children {
+			childLits, ok := collectStringOnlyRuleLiterals(child)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, childLits...)
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
 }
 
 // dfaAcceptsSubsetOf checks whether every string accepted by DFA 'candidate'
@@ -2867,8 +2960,10 @@ func addRuleSymbol(r *Rule, st *symbolTable, rhs *[]int) {
 			*rhs = append(*rhs, id)
 		}
 	case RulePattern:
-		// Inline patterns are registered by their pattern value.
-		if id, ok := st.lookup(r.Value); ok {
+		// Inline patterns use a distinct internal symbol key so they do not
+		// collide with anonymous string terminals that share the same display
+		// text (for example SQL's literal ".*" and pg_command regex /.*/).
+		if id, ok := st.lookup(inlinePatternSymbolKey(r.Value)); ok {
 			*rhs = append(*rhs, id)
 		}
 	}

@@ -3,6 +3,7 @@ package grammargen
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -144,6 +145,8 @@ func (b *nfaBuilder) buildFromRegexNode(node *regexNode) (nfaFragment, error) {
 		ranges := node.runes
 		if node.negate {
 			ranges = complementRanges(ranges)
+		} else {
+			ranges = mergeRanges(ranges)
 		}
 		for _, rr := range ranges {
 			b.addCharRange(start, rr.lo, rr.hi, end)
@@ -314,15 +317,29 @@ func (b *nfaBuilder) buildSeq(children []*Rule) (nfaFragment, error) {
 	if len(children) == 0 {
 		return b.buildEpsilon(), nil
 	}
-	first, err := b.buildFromRule(children[0])
-	if err != nil {
-		return nfaFragment{}, err
-	}
-	cur := first
-	for _, c := range children[1:] {
-		next, err := b.buildFromRule(c)
-		if err != nil {
-			return nfaFragment{}, err
+	var cur nfaFragment
+	initialized := false
+	for i := 0; i < len(children); {
+		var next nfaFragment
+		if children[i] != nil && children[i].Kind == RuleString {
+			var sb strings.Builder
+			for i < len(children) && children[i] != nil && children[i].Kind == RuleString {
+				sb.WriteString(children[i].Value)
+				i++
+			}
+			next = b.buildString(sb.String())
+		} else {
+			frag, err := b.buildFromRule(children[i])
+			if err != nil {
+				return nfaFragment{}, err
+			}
+			next = frag
+			i++
+		}
+		if !initialized {
+			cur = next
+			initialized = true
+			continue
 		}
 		b.addEpsilon(cur.end, next.start)
 		cur = nfaFragment{cur.start, next.end}
@@ -333,6 +350,9 @@ func (b *nfaBuilder) buildSeq(children []*Rule) (nfaFragment, error) {
 func (b *nfaBuilder) buildChoice(children []*Rule) (nfaFragment, error) {
 	if len(children) == 0 {
 		return b.buildEpsilon(), nil
+	}
+	if frag, ok := b.buildStringChoice(children); ok {
+		return frag, nil
 	}
 	start := b.addState()
 	end := b.addState()
@@ -345,6 +365,42 @@ func (b *nfaBuilder) buildChoice(children []*Rule) (nfaFragment, error) {
 		b.addEpsilon(frag.end, end)
 	}
 	return nfaFragment{start, end}, nil
+}
+
+func (b *nfaBuilder) buildStringChoice(children []*Rule) (nfaFragment, bool) {
+	for _, child := range children {
+		if child == nil || child.Kind != RuleString {
+			return nfaFragment{}, false
+		}
+	}
+
+	start := b.addState()
+	end := b.addState()
+	edges := make(map[int]map[rune]int)
+	nextState := func(from int, r rune) int {
+		if byRune, ok := edges[from]; ok {
+			if to, ok := byRune[r]; ok {
+				return to
+			}
+		} else {
+			edges[from] = make(map[rune]int)
+		}
+		to := b.addState()
+		b.addCharRange(from, r, r, to)
+		edges[from][r] = to
+		return to
+	}
+
+	for _, child := range children {
+		cur := start
+		for i := 0; i < len(child.Value); {
+			r, size := utf8.DecodeRuneInString(child.Value[i:])
+			cur = nextState(cur, r)
+			i += size
+		}
+		b.addEpsilon(cur, end)
+	}
+	return nfaFragment{start, end}, true
 }
 
 func (b *nfaBuilder) buildStar(r *Rule) (nfaFragment, error) {
@@ -393,8 +449,40 @@ func (b *nfaBuilder) buildOptional(r *Rule) (nfaFragment, error) {
 func buildCombinedNFA(patterns []TerminalPattern) (*nfa, error) {
 	b := newNFABuilder()
 	start := b.addState()
+	stringCounts := make(map[string]int)
+	for _, pat := range patterns {
+		if pat.Rule != nil && pat.Rule.Kind == RuleString {
+			stringCounts[pat.Rule.Value]++
+		}
+	}
+	trieEdges := make(map[int]map[rune]int)
+	addStringPattern := func(lit string, symID, priority int) {
+		cur := start
+		for i := 0; i < len(lit); {
+			r, size := utf8.DecodeRuneInString(lit[i:])
+			byRune := trieEdges[cur]
+			if byRune == nil {
+				byRune = make(map[rune]int)
+				trieEdges[cur] = byRune
+			}
+			next, ok := byRune[r]
+			if !ok {
+				next = b.addState()
+				b.addCharRange(cur, r, r, next)
+				byRune[r] = next
+			}
+			cur = next
+			i += size
+		}
+		b.states[cur].accept = symID
+		b.states[cur].priority = priority
+	}
 
 	for _, pat := range patterns {
+		if pat.Rule != nil && pat.Rule.Kind == RuleString && stringCounts[pat.Rule.Value] == 1 {
+			addStringPattern(pat.Rule.Value, pat.SymbolID, pat.Priority)
+			continue
+		}
 		frag, err := b.buildFromRule(pat.Rule)
 		if err != nil {
 			return nil, fmt.Errorf("terminal %d: %w", pat.SymbolID, err)

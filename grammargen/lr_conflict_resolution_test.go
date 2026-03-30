@@ -54,3 +54,29 @@ func TestResolveReduceReduceKeepsTypeValueSingleTokenAmbiguity(t *testing.T) {
 		t.Fatalf("resolved actions = %+v, want both reduces kept", got)
 	}
 }
+
+func TestResolveAuxToParentsUsesCachedReverseParents(t *testing.T) {
+	ng := &NormalizedGrammar{
+		Symbols: []SymbolInfo{
+			{Name: "expression", Kind: SymbolNonterminal},
+			{Name: "value_repeat1", Kind: SymbolNonterminal},
+			{Name: "value_token1", Kind: SymbolNamedToken},
+		},
+		Productions: []Production{
+			{LHS: 1, RHS: []int{2}},
+			{LHS: 0, RHS: []int{1}},
+		},
+		Conflicts: [][]int{{0}},
+	}
+
+	cache := getConflictResolutionCache(ng)
+	got := resolveAuxToParents(2, ng, cache)
+	if len(got) != 1 || got[0] != 0 {
+		t.Fatalf("resolveAuxToParents(value_token1) = %v, want [0]", got)
+	}
+
+	again := resolveAuxToParents(2, ng, cache)
+	if len(again) != 1 || again[0] != 0 {
+		t.Fatalf("cached resolveAuxToParents(value_token1) = %v, want [0]", again)
+	}
+}
