@@ -311,17 +311,8 @@ func (c *QueryCursor) commitCapturesToArena(src []QueryCapture) []QueryCapture {
 	if len(src) == 0 {
 		return nil
 	}
-	need := len(c.captureArena) + len(src)
-	if need > cap(c.captureArena) {
-		// Grow arena with 2x strategy, reserving enough for src.
-		newCap := cap(c.captureArena) * 2
-		if newCap < need {
-			newCap = need + 64
-		}
-		grown := make([]QueryCapture, len(c.captureArena), newCap)
-		copy(grown, c.captureArena)
-		c.captureArena = grown
-	}
+	// Use append's built-in growth strategy, which is more memory-efficient
+	// than manual doubling because it accounts for Go's allocator size classes.
 	start := len(c.captureArena)
 	c.captureArena = append(c.captureArena, src...)
 	return c.captureArena[start : start+len(src) : start+len(src)]
