@@ -73,18 +73,24 @@ func (ip *InjectionParser) RegisterInjectionQuery(parentLang string, query strin
 	return nil
 }
 
+// releaseResult releases all parse trees held by r. Safe to call with nil.
+func releaseResult(r *InjectionResult) {
+	if r == nil {
+		return
+	}
+	r.Tree.Release()
+	for _, inj := range r.Injections {
+		if inj.Tree != nil {
+			inj.Tree.Release()
+		}
+	}
+}
+
 // Parse parses source as parentLang, then recursively parses injected regions.
 func (ip *InjectionParser) Parse(source []byte, parentLang string) (*InjectionResult, error) {
 	// Release previous result to allow arena reuse.
-	if ip.prevResult != nil {
-		ip.prevResult.Tree.Release()
-		for _, inj := range ip.prevResult.Injections {
-			if inj.Tree != nil {
-				inj.Tree.Release()
-			}
-		}
-		ip.prevResult = nil
-	}
+	releaseResult(ip.prevResult)
+	ip.prevResult = nil
 
 	lang, ok := ip.languages[parentLang]
 	if !ok {
@@ -114,16 +120,11 @@ func (ip *InjectionParser) Parse(source []byte, parentLang string) (*InjectionRe
 func (ip *InjectionParser) ParseIncremental(source []byte, parentLang string,
 	oldResult *InjectionResult) (*InjectionResult, error) {
 
-	// Release previous result to allow arena reuse.
-	if ip.prevResult != nil {
-		ip.prevResult.Tree.Release()
-		for _, inj := range ip.prevResult.Injections {
-			if inj.Tree != nil {
-				inj.Tree.Release()
-			}
-		}
-		ip.prevResult = nil
-	}
+	// Detach prevResult now; release it after parsing so that oldResult.Tree
+	// (which may be the same object) remains valid throughout the parse.
+	prev := ip.prevResult
+	ip.prevResult = nil
+	defer releaseResult(prev)
 
 	lang, ok := ip.languages[parentLang]
 	if !ok {
