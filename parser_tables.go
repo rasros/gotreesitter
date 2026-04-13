@@ -3,6 +3,7 @@ package gotreesitter
 import "sort"
 
 const smallTokenDenseThreshold = 8
+const cobolSmallTokenDenseThreshold = 12
 
 func buildSmallLookup(lang *Language) [][]smallActionPair {
 	out := make([][]smallActionPair, len(lang.SmallParseTableMap))
@@ -55,6 +56,79 @@ func buildSmallTokenLookup(lang *Language) [][]uint16 {
 	if lang == nil || lang.TokenCount == 0 || len(lang.SmallParseTableMap) == 0 || len(lang.SmallParseTable) == 0 {
 		return nil
 	}
+	if !compactSmallTokenRows(lang) {
+		return buildSmallTokenLookupFullRows(lang, smallTokenDenseThreshold)
+	}
+	out := make([][]uint16, len(lang.SmallParseTableMap))
+	table := lang.SmallParseTable
+	tokenCount := int(lang.TokenCount)
+	threshold := cobolSmallTokenDenseThreshold
+	seen := make([]int, tokenCount)
+	for smallIdx, offset := range lang.SmallParseTableMap {
+		pos := int(offset)
+		if pos >= len(table) {
+			continue
+		}
+		groupCount := table[pos]
+		pos++
+		used := 0
+		maxSym := -1
+		seenStamp := smallIdx + 1
+		countPos := pos
+		for i := uint16(0); i < groupCount; i++ {
+			if countPos+1 >= len(table) {
+				break
+			}
+			symbolCount := table[countPos+1]
+			countPos += 2
+			for j := uint16(0); j < symbolCount; j++ {
+				if countPos >= len(table) {
+					break
+				}
+				sym := int(table[countPos])
+				if sym >= 0 && sym < tokenCount {
+					if seen[sym] != seenStamp {
+						seen[sym] = seenStamp
+						used++
+						if sym > maxSym {
+							maxSym = sym
+						}
+					}
+				}
+				countPos++
+			}
+		}
+		if used > threshold {
+			row := make([]uint16, maxSym+1)
+			for i := uint16(0); i < groupCount; i++ {
+				if pos+1 >= len(table) {
+					break
+				}
+				val := table[pos]
+				symbolCount := table[pos+1]
+				pos += 2
+				for j := uint16(0); j < symbolCount; j++ {
+					if pos >= len(table) {
+						break
+					}
+					sym := int(table[pos])
+					if sym >= 0 && sym < len(row) {
+						row[sym] = val
+					}
+					pos++
+				}
+			}
+			out[smallIdx] = row
+		}
+	}
+	return out
+}
+
+func compactSmallTokenRows(lang *Language) bool {
+	return lang != nil && (lang.Name == "cobol" || lang.Name == "COBOL")
+}
+
+func buildSmallTokenLookupFullRows(lang *Language, threshold int) [][]uint16 {
 	out := make([][]uint16, len(lang.SmallParseTableMap))
 	table := lang.SmallParseTable
 	tokenCount := int(lang.TokenCount)
@@ -88,7 +162,7 @@ func buildSmallTokenLookup(lang *Language) [][]uint16 {
 				pos++
 			}
 		}
-		if used > smallTokenDenseThreshold {
+		if used > threshold {
 			out[smallIdx] = row
 		}
 	}
