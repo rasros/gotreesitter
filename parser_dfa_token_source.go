@@ -71,6 +71,22 @@ var dfaTokenSourcePool = sync.Pool{
 	},
 }
 
+func initDFATokenSource(ts *dfaTokenSource, lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool) {
+	ts.lexer = lexer
+	ts.language = language
+	ts.state = 0
+	ts.lookupActionIndex = lookupActionIndex
+	ts.hasKeywordState = hasKeywordState
+	if lexer != nil && language != nil {
+		ts.lexer.states = language.LexStates
+		ts.lexer.immediateTokens = language.ImmediateTokens
+		ts.lexer.asciiTable = language.LexAsciiTable()
+	}
+	if language != nil && language.ExternalScanner != nil {
+		ts.externalPayload = language.ExternalScanner.Create()
+	}
+}
+
 func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool) *dfaTokenSource {
 	ts := dfaTokenSourcePool.Get().(*dfaTokenSource)
 	// Preserve pooled scratch slices across the struct reset below so they can
@@ -81,19 +97,7 @@ func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex f
 		zeroWidthPos: -1,
 	}
 	ts.maskedScratch = savedMasked
-	ts.lexer = lexer
-	ts.language = language
-	ts.state = 0
-	ts.lookupActionIndex = lookupActionIndex
-	ts.hasKeywordState = hasKeywordState
-	if lexer != nil && language != nil {
-		ts.lexer.states = language.LexStates
-		ts.lexer.immediateTokens = language.ImmediateTokens
-		ts.lexer.asciiTable = language.LexAsciiTable()
-	}
-	if language != nil && language.ExternalScanner != nil {
-		ts.externalPayload = language.ExternalScanner.Create()
-	}
+	initDFATokenSource(ts, lexer, language, lookupActionIndex, hasKeywordState)
 	return ts
 }
 
@@ -103,19 +107,7 @@ func newDFATokenSourceDirect(lexer *Lexer, language *Language, lookupActionIndex
 		zeroWidthPos: -1,
 		noPool:       true,
 	}
-	ts.lexer = lexer
-	ts.language = language
-	ts.state = 0
-	ts.lookupActionIndex = lookupActionIndex
-	ts.hasKeywordState = hasKeywordState
-	if lexer != nil && language != nil {
-		ts.lexer.states = language.LexStates
-		ts.lexer.immediateTokens = language.ImmediateTokens
-		ts.lexer.asciiTable = language.LexAsciiTable()
-	}
-	if language != nil && language.ExternalScanner != nil {
-		ts.externalPayload = language.ExternalScanner.Create()
-	}
+	initDFATokenSource(ts, lexer, language, lookupActionIndex, hasKeywordState)
 	return ts
 }
 
